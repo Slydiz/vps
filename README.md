@@ -98,3 +98,8 @@ Settings → **Only record streams whose game matches**. Default keywords: `gran
 ## Disk and bandwidth
 Raw recordings are about 1 GB per 10 minutes per stream at 720p60. They are deleted as soon as the clips are cut (Settings → keep raw recordings = No). Only matching streams are recorded, but start with 4-6 streamers: each live recording downloads about 3-6 Mbit/s continuously.
 After a restart, segments that were recorded but not analysed are processed automatically.
+
+## Following YouTube channels (for example a launch-day live)
+Streamers tab → platform **youtube** → paste the channel's **@handle, link or ID**; the app looks up the UC... id itself. It needs `YOUTUBE_API_KEY` in Settings.
+Quota: each check costs 2 units per channel, so one channel polled every 2 minutes uses about 2 900 units a day. The default daily quota is 10 000 and uploads to YouTube (1 600 each) draw from the same project, so follow only a few YouTube channels, or use a separate Google project for the watching key.
+YouTube does not report the game, so the stream title must contain one of your keywords (gta 6, gta vi...).

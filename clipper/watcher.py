@@ -9,6 +9,7 @@ Platform endpoints used:
 """
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 
@@ -173,3 +174,39 @@ def matches_game(info: LiveInfo, keywords: list[str], match_title: bool = False)
     title = (info.title or "").lower()
     hay = title if info.game is None else (info.game.lower() + (" | " + title if match_title else ""))
     return any(k in hay for k in kws)
+
+
+_UC = re.compile(r"(UC[\w-]{20,})")
+_HANDLE = re.compile(r"(?:youtube\.com/)?(@[\w.\-]+)")
+
+
+def parse_youtube_ref(text: str):
+    """'@name', a youtube.com link or a UC... id -> ('id', 'UC...') | ('handle', '@name') | None."""
+    t = (text or "").strip()
+    m = _UC.search(t)
+    if m and ("/channel/" in t or t.startswith("UC")):
+        return "id", m.group(1)
+    m = _HANDLE.search(t)
+    if m:
+        return "handle", m.group(1)
+    return None
+
+
+def resolve_youtube_channel(session, api_key: str, text: str) -> str:
+    """Turn what the user pasted into a UC... channel id (1 API quota unit for a handle)."""
+    ref = parse_youtube_ref(text)
+    if not ref:
+        raise WatchError("Paste the channel's @handle, its youtube.com link or its ID (UC...)")
+    kind, val = ref
+    if kind == "id":
+        return val
+    if not api_key:
+        raise WatchError("Add YOUTUBE_API_KEY in Settings first (needed to look the channel up)")
+    r = session.get("https://www.googleapis.com/youtube/v3/channels",
+                    params={"part": "id", "forHandle": val, "key": api_key}, timeout=15)
+    if r.status_code != 200:
+        raise WatchError(f"YouTube lookup failed (HTTP {r.status_code})")
+    items = r.json().get("items", [])
+    if not items:
+        raise WatchError(f"No YouTube channel found for {val}")
+    return items[0]["id"]

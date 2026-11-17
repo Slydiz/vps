@@ -1,5 +1,5 @@
 from clipper.config import Streamer
-from clipper.watcher import TwitchWatcher, YouTubeWatcher, KickWatcher, WatchError, build_watchers, LiveInfo, matches_game
+from clipper.watcher import TwitchWatcher, YouTubeWatcher, KickWatcher, WatchError, build_watchers, LiveInfo, matches_game, parse_youtube_ref, resolve_youtube_channel
 from conftest import FakeHttp, FakeResp
 import pytest
 
@@ -81,3 +81,31 @@ def test_matches_game():
     assert not matches_game(LiveInfo(True, "Minecraft", game=None), KW)
     assert matches_game(LiveInfo(True, "anything", game="Chess"), [])                              # no filter = everything
     assert matches_game(LiveInfo(True, "anything", game="Chess"), ["", "  "])
+
+
+UC_ID = "UC" + "a" * 22
+
+
+def test_parse_youtube_ref_variants():
+    assert parse_youtube_ref("@CarolQ") == ("handle", "@CarolQ")
+    assert parse_youtube_ref("https://www.youtube.com/@Loserfruit/streams") == ("handle", "@Loserfruit")
+    assert parse_youtube_ref("youtube.com/@a.b-c") == ("handle", "@a.b-c")
+    assert parse_youtube_ref(f"https://www.youtube.com/channel/{UC_ID}") == ("id", UC_ID)
+    assert parse_youtube_ref(UC_ID) == ("id", UC_ID)
+    assert parse_youtube_ref("just a name") is None and parse_youtube_ref("") is None
+
+
+def test_resolve_youtube_channel():
+    h = FakeHttp({"youtube/v3/channels": FakeResp(200, {"items": [{"id": UC_ID}]})})
+    assert resolve_youtube_channel(h, "KEY", "@CarolQ") == UC_ID
+    assert h.calls[0][2]["params"]["forHandle"] == "@CarolQ"
+    h2 = FakeHttp()
+    assert resolve_youtube_channel(h2, "", f"https://youtube.com/channel/{UC_ID}") == UC_ID and h2.calls == []   # no API call needed
+    with pytest.raises(WatchError, match="YOUTUBE_API_KEY"):
+        resolve_youtube_channel(FakeHttp(), "", "@x")
+    with pytest.raises(WatchError, match="No YouTube channel"):
+        resolve_youtube_channel(FakeHttp({"youtube/v3/channels": FakeResp(200, {"items": []})}), "K", "@x")
+    with pytest.raises(WatchError, match="HTTP 403"):
+        resolve_youtube_channel(FakeHttp({"youtube/v3/channels": FakeResp(403, {})}), "K", "@x")
+    with pytest.raises(WatchError, match="Paste"):
+        resolve_youtube_channel(FakeHttp(), "K", "hello")

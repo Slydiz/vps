@@ -17,7 +17,7 @@ from flask import (Flask, Response, abort, jsonify, redirect, render_template_st
 from .config import (HIDDEN_SECRETS, PLATFORMS, SECRETS, SUGGESTED, Streamer, remove_env_key, save_config, save_env_values,
                      secret_status, validate)
 from .publisher import GoogleDeviceAuth, PublishError, build_publishers
-from .watcher import build_watchers
+from .watcher import WatchError, build_watchers, resolve_youtube_channel
 
 CSS = """
 :root{--bg:#0f1115;--card:#171a21;--line:#262b36;--tx:#e8eaf0;--mut:#8b93a7;--ok:#2ecc71;--bad:#ff5d5d;--warn:#f5b942;--acc:#6c8cff}
@@ -286,7 +286,7 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
 <form class="card" method="post" action="{{url_for('streamer_add')}}">
 <label>Channel name (as in the URL)</label><input name="name" required placeholder="kaicenat">
 <label>Platform</label><select name="platform">{% for p in platforms %}<option>{{p}}</option>{% endfor %}</select>
-<label>YouTube channel ID (YouTube only, starts with UC)</label><input name="channel_id" placeholder="UCxxxxxxxxxxxxxxxxxxxxxx">
+<label>YouTube only: the channel\'s @handle, its link, or its ID (UC...)</label><input name="channel_id" placeholder="@channelname or https://www.youtube.com/@channelname">
 <div style="margin-top:14px"><button class="acc">Add</button></div></form>
 """
         return page("streamers", body, msg=request.args.get("msg"), streamers=cfg.streamers, platforms=PLATFORMS,
@@ -297,6 +297,13 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
         name = request.form.get("name", "").strip().lstrip("@")
         platform = request.form.get("platform", "").lower()
         cid = request.form.get("channel_id", "").strip() or None
+        if platform == "youtube" and cid is None and name.startswith("UC"):
+            cid = name                                    # an id typed in the name box
+        if platform == "youtube":
+            try:
+                cid = resolve_youtube_channel(ctx.session, ctx.environ.get("YOUTUBE_API_KEY", ""), cid or name)
+            except WatchError as e:
+                return redirect(url_for("streamers", msg=str(e)))
         if not name or platform not in PLATFORMS:
             return redirect(url_for("streamers", msg="Invalid streamer"))
         s = Streamer(name, platform, cid)

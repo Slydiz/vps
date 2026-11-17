@@ -446,3 +446,19 @@ def test_add_suggested_streamers_is_idempotent_and_keeps_existing(gui):
     assert len(load_config(ctx.cfg_path).streamers) == 16               # saved to config.yaml
     assert c.post("/streamers/add-suggested", data={"group": "nope"}).status_code == 400
     assert b"Add French" in c.get("/streamers").data
+
+
+def test_add_youtube_streamer_by_handle_link_or_id(gui):
+    c, store, ctx, *_ = gui
+    uc = "UC" + "b" * 22
+    ctx.environ["YOUTUBE_API_KEY"] = "K"
+    ctx.session.routes = {"youtube/v3/channels": FakeResp(200, {"items": [{"id": uc}]})}
+    c.post("/streamers/add", data={"name": "Launch stream", "platform": "youtube", "channel_id": "https://www.youtube.com/@launch"})
+    assert [(s.key(), s.channel_id) for s in ctx.cfg.streamers] == [("youtube:launch stream", uc)]
+    c.post("/streamers/add", data={"name": "Other", "platform": "youtube", "channel_id": "UC" + "c" * 22})
+    assert ctx.cfg.streamers[-1].channel_id == "UC" + "c" * 22
+    r = c.post("/streamers/add", data={"name": "Bad", "platform": "youtube", "channel_id": "not a channel"}, follow_redirects=True)
+    assert b"Paste the channel" in r.data and len(ctx.cfg.streamers) == 2
+    ctx.environ.pop("YOUTUBE_API_KEY")
+    r = c.post("/streamers/add", data={"name": "NoKey", "platform": "youtube", "channel_id": "@x"}, follow_redirects=True)
+    assert b"YOUTUBE_API_KEY" in r.data and len(ctx.cfg.streamers) == 2
