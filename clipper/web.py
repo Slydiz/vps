@@ -14,7 +14,7 @@ from pathlib import Path
 from flask import (Flask, Response, abort, jsonify, redirect, render_template_string, request, send_file,
                    send_from_directory, url_for)
 
-from .config import (HIDDEN_SECRETS, PLATFORMS, SECRETS, Streamer, remove_env_key, save_config, save_env_values,
+from .config import (HIDDEN_SECRETS, PLATFORMS, SECRETS, SUGGESTED, Streamer, remove_env_key, save_config, save_env_values,
                      secret_status, validate)
 from .publisher import GoogleDeviceAuth, PublishError, build_publishers
 from .watcher import build_watchers
@@ -276,6 +276,12 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
 {% for s in streamers %}<tr><td><b>{{s.name}}</b>{% if s.channel_id %}<div class="sm mut">{{s.channel_id}}</div>{% endif %}</td><td>{{s.platform}}</td>
 <td style="text-align:right"><form method="post" action="{{url_for('streamer_remove')}}"><input type="hidden" name="key" value="{{s.key()}}"><button class="bad">Remove</button></form></td></tr>
 {% else %}<tr><td colspan="3" class="empty">No streamer yet.</td></tr>{% endfor %}</table></div>
+<h2>Starter lists (Twitch)</h2>
+<div class="card sm"><div class="mut" style="margin-bottom:10px">Adds the streamers you do not have yet. Only GTA VI lives are recorded (see Settings). Remove any you do not want.</div>
+<form method="post" action="{{url_for('streamer_add_suggested')}}" class="actions">
+<button class="acc" name="group" value="fr">🇫🇷 Add French ({{n_fr}})</button>
+<button class="acc" name="group" value="us">🇺🇸 Add American ({{n_us}})</button>
+<button name="group" value="all">Add both</button></form></div>
 <h2>Add a streamer</h2>
 <form class="card" method="post" action="{{url_for('streamer_add')}}">
 <label>Channel name (as in the URL)</label><input name="name" required placeholder="kaicenat">
@@ -283,7 +289,8 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
 <label>YouTube channel ID (YouTube only, starts with UC)</label><input name="channel_id" placeholder="UCxxxxxxxxxxxxxxxxxxxxxx">
 <div style="margin-top:14px"><button class="acc">Add</button></div></form>
 """
-        return page("streamers", body, msg=request.args.get("msg"), streamers=cfg.streamers, platforms=PLATFORMS)
+        return page("streamers", body, msg=request.args.get("msg"), streamers=cfg.streamers, platforms=PLATFORMS,
+                    n_fr=len(SUGGESTED["fr"]), n_us=len(SUGGESTED["us"]))
 
     @app.post("/streamers/add")
     def streamer_add():
@@ -303,6 +310,22 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
             return redirect(url_for("streamers", msg=str(e)))
         save_config(cfg, ctx.cfg_path)
         return redirect(url_for("streamers", msg=f"Added {name}"))
+
+    @app.post("/streamers/add-suggested")
+    def streamer_add_suggested():
+        group = request.form.get("group", "")
+        names = SUGGESTED["fr"] + SUGGESTED["us"] if group == "all" else SUGGESTED.get(group)
+        if not names:
+            abort(400)
+        have = {x.key() for x in cfg.streamers}
+        added = 0
+        for n in names:
+            st = Streamer(n, "twitch")
+            if st.key() not in have:
+                cfg.streamers.append(st)
+                added += 1
+        save_config(cfg, ctx.cfg_path)
+        return redirect(url_for("streamers", msg=f"Added {added} streamer(s)" if added else "Already all in your list"))
 
     @app.post("/streamers/remove")
     def streamer_remove():

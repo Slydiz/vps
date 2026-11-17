@@ -25,6 +25,13 @@ SECRETS = {
 HIDDEN_SECRETS = {"YOUTUBE_REFRESH_TOKEN"}  # stored like the others, but never shown as an input
 
 
+# Starter lists (Twitch logins). Suggestions only: check each name on twitch.tv before relying on it.
+SUGGESTED = {
+    "fr": ["squeezie", "gotaga", "locklear", "michou", "inoxtag", "domingo", "kamet0", "zerator", "hasheur", "raionchi"],
+    "us": ["kaicenat", "summit1g", "timthetatman", "shroud", "sodapoppin", "lirik"],
+}
+
+
 @dataclass
 class Streamer:
     name: str

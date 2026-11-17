@@ -430,3 +430,19 @@ def test_dashboard_explains_ignored_live(gui):
     store.set_streamer_state("twitch:kai", "kai", "twitch", live=True, title="ranked", game="League of Legends", ignored=True)
     html = c.get("/").data.decode()
     assert "League of Legends" in html and "not recorded" in html
+
+
+def test_add_suggested_streamers_is_idempotent_and_keeps_existing(gui):
+    from clipper.config import SUGGESTED, load_config
+    c, store, ctx, *_ = gui
+    c.post("/streamers/add", data={"name": "squeezie", "platform": "twitch"})
+    c.post("/streamers/add-suggested", data={"group": "fr"})
+    keys = [s.key() for s in ctx.cfg.streamers]
+    assert len(keys) == len(SUGGESTED["fr"]) and len(set(keys)) == len(keys) and "twitch:domingo" in keys
+    c.post("/streamers/add-suggested", data={"group": "all"})
+    assert len(ctx.cfg.streamers) == len(SUGGESTED["fr"]) + len(SUGGESTED["us"])
+    r = c.post("/streamers/add-suggested", data={"group": "all"}, follow_redirects=True)
+    assert b"Already all in your list" in r.data and len(ctx.cfg.streamers) == 16
+    assert len(load_config(ctx.cfg_path).streamers) == 16               # saved to config.yaml
+    assert c.post("/streamers/add-suggested", data={"group": "nope"}).status_code == 400
+    assert b"Add French" in c.get("/streamers").data
