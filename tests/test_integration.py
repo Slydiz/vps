@@ -1,0 +1,244 @@
+"""Integration: real ffmpeg + real sqlite + real Flask routes; only the platform HTTP APIs are faked."""
+import json, subprocess, time
+from pathlib import Path
+import pytest
+from clipper import demo
+from clipper.clipper import probe_duration
+from clipper.config import Config, Streamer
+from clipper.pipeline import Pipeline
+from clipper.recorder import segment_start_epoch
+from clipper.store import Store
+from clipper.watcher import LiveInfo
+from clipper.web import Ctx, create_app
+from conftest import FakeHttp, FakeResp
+
+PEAKS = (120, 280)
+
+
+@pytest.fixture(scope="module")
+def stream(tmp_path_factory):
+    d = tmp_path_factory.mktemp("rec")
+    seg = d / "twitch-demo_20260101120000_000.ts"
+    demo.make_synthetic_segment(seg, 360, PEAKS)
+    chat = d / "chat.jsonl"
+    demo.make_synthetic_chat(chat, segment_start_epoch(seg, 600), 360, PEAKS)
+    flat = d / "twitch-flat_20260101120000_000.ts"
+    demo.make_synthetic_segment(flat, 240, ())
+    return seg, chat, flat
+
+
+class Spy:
+    def __init__(self): self.events = []
+    url = "x"
+    def stream_live(self, *a): self.events.append(("live", a[0]))
+    def stream_ended(self, *a): self.events.append(("ended", a[0]))
+    def clip_ready(self, clip): self.events.append(("clip", clip["id"]))
+
+
+def make_pipeline(tmp_path, watchers=None, streamers=(), vertical=False):
+    cfg = Config(data_dir=str(tmp_path / "data"), streamers=list(streamers))
+    cfg.clip.vertical = vertical
+    store = Store(tmp_path / "t.db")
+    spy = Spy()
+    return cfg, store, spy, Pipeline(cfg, store, watchers or {}, spy)
+
+
+def test_detects_planted_peaks_and_cuts_with_pre_roll(tmp_path, stream):
+    seg, chat, _ = stream
+    cfg, store, spy, p = make_pipeline(tmp_path)
+    ids = p.process_segment(seg, "twitch:demo", chat)
+    clips = [store.get_clip(i) for i in ids]
+    assert len(clips) == 2
+    for c, peak in zip(sorted(clips, key=lambda c: c["peak_s"]), PEAKS):
+        assert abs(c["peak_s"] - (peak + 3)) <= 6                      # burst spans peak..peak+6
+        assert abs((c["peak_s"] - c["start_s"]) - cfg.clip.pre_seconds) < 0.01
+        assert 55 <= probe_duration(c["path"]) <= 62                    # pre 40 + post 20
+        assert Path(c["thumb"]).exists() and c["status"] == "pending"
+    assert [e[0] for e in spy.events] == ["clip", "clip"]               # Discord told once per clip
+    assert store.segment_done(seg)
+
+
+def test_clip_is_vertical_1080x1920(tmp_path, stream):
+    seg, chat, _ = stream
+    cfg, store, _, p = make_pipeline(tmp_path, vertical=True)
+    cfg.clip.pre_seconds, cfg.clip.post_seconds, cfg.clip.max_clips_per_segment = 6, 4, 1   # short clip: vertical encode is CPU heavy
+    c = store.get_clip(p.process_segment(seg, "twitch:demo", chat)[0])
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                          "-of", "csv=p=0", c["path"]], capture_output=True, text=True).stdout.strip()
+    assert out == "1080,1920"
+
+
+def test_audio_only_still_finds_peaks_without_chat(tmp_path, stream):
+    seg, _, _ = stream
+    _, store, _, p = make_pipeline(tmp_path)
+    assert len(p.process_segment(seg, "kick:demo", None)) == 2
+
+
+def test_quiet_stream_produces_no_clips(tmp_path, stream):
+    _, _, flat = stream
+    _, store, _, p = make_pipeline(tmp_path)
+    assert p.process_segment(flat, "twitch:flat", None) == []           # no false positives at the edges either
+    assert store.segment_done(flat)
+
+
+def test_pre_roll_is_clamped_when_peak_is_early(tmp_path):
+    seg = tmp_path / "twitch-e_20260101120000_000.ts"
+    demo.make_synthetic_segment(seg, 120, (15,))
+    _, store, _, p = make_pipeline(tmp_path)
+    c = store.get_clip(p.process_segment(seg, "twitch:e", None)[0])
+    assert c["start_s"] == 0.0 and probe_duration(c["path"]) < 45
+
+
+# ---------------------------------------------------------------- watcher loop with fakes
+class FakeWatcher:
+    def __init__(self, seq): self.seq = list(seq)
+    def check(self, s):
+        v = self.seq.pop(0) if len(self.seq) > 1 else self.seq[0]
+        if isinstance(v, Exception): raise v
+        return v
+
+
+class FakeRecorder:
+    started, stopped = [], []
+    def __init__(self, key, url, out_dir, seg): self.key, self.stamp, self.url = key, "S", url
+    def start(self): FakeRecorder.started.append(self.key)
+    def stop(self): FakeRecorder.stopped.append(self.key)
+    def alive(self): return True
+    def completed_segments(self): return []
+
+
+class FakeChat:
+    def __init__(self, *a): pass
+    def start(self): pass
+    def stop(self): pass
+
+
+def test_poll_lifecycle_live_then_offline(tmp_path):
+    FakeRecorder.started, FakeRecorder.stopped = [], []
+    s = Streamer("kai", "twitch")
+    w = FakeWatcher([LiveInfo(False), LiveInfo(True, "Hi", "u"), LiveInfo(True, "Hi", "u"), LiveInfo(False)])
+    cfg, store, spy, _ = make_pipeline(tmp_path, streamers=[s])
+    p = Pipeline(cfg, store, {"twitch": w}, spy, recorder_factory=FakeRecorder, chat_factory=FakeChat)
+    p.poll(); assert FakeRecorder.started == []
+    p.poll(); assert FakeRecorder.started == ["twitch:kai"] and ("live", "kai") in spy.events
+    assert store.get_streamer_state("twitch:kai")["recording"] == 1
+    p.poll(); assert FakeRecorder.started == ["twitch:kai"]            # no duplicate recorder
+    p.poll(); assert FakeRecorder.stopped == ["twitch:kai"] and ("ended", "kai") in spy.events
+    assert store.get_streamer_state("twitch:kai")["recording"] == 0
+
+
+def test_one_failing_api_does_not_stop_other_streamers(tmp_path):
+    FakeRecorder.started, FakeRecorder.stopped = [], []
+    a, b = Streamer("a", "twitch"), Streamer("b", "kick")
+    cfg, store, spy, _ = make_pipeline(tmp_path, streamers=[a, b])
+    p = Pipeline(cfg, store, {"twitch": FakeWatcher([RuntimeError("boom")]), "kick": FakeWatcher([LiveInfo(True, "t", "u")])},
+                 spy, recorder_factory=FakeRecorder, chat_factory=FakeChat)
+    p.poll()
+    assert "boom" in store.get_streamer_state("twitch:a")["error"] and FakeRecorder.started == ["kick:b"]
+
+
+def test_missing_platform_credentials_are_reported_not_fatal(tmp_path):
+    cfg, store, spy, p = make_pipeline(tmp_path, watchers={}, streamers=[Streamer("a", "twitch")])
+    p.poll()
+    assert "no credentials" in store.get_streamer_state("twitch:a")["error"]
+
+
+# ---------------------------------------------------------------- GUI routes
+@pytest.fixture
+def gui(tmp_path, stream):
+    seg, chat, _ = stream
+    cfg, store, spy, p = make_pipeline(tmp_path)
+    env = {}
+    ctx = Ctx(cfg, str(tmp_path / "config.yaml"), store, p, FakeHttp(), env, str(tmp_path / ".env"))
+    ids = p.process_segment(seg, "twitch:demo", chat)
+    app = create_app(ctx, sync_publish=True)
+    return app.test_client(), store, ctx, ids, tmp_path
+
+
+def test_pages_render(gui):
+    c, *_ = gui
+    for path in ("/", "/review", "/streamers", "/history", "/settings"):
+        r = c.get(path)
+        assert r.status_code == 200 and b"Clip Pipeline" in r.data, path
+
+
+def test_review_lists_pending_and_serves_video(gui):
+    c, store, ctx, ids, _ = gui
+    html = c.get("/review").data.decode()
+    assert html.count("<video") == 2
+    name = Path(store.get_clip(ids[0])["path"]).name
+    r = c.get(f"/media/{name}")
+    assert r.status_code == 200 and r.mimetype == "video/mp4"
+    assert c.get("/media/../../etc/passwd").status_code == 404
+
+
+def test_approve_publishes_via_local_export_and_edits_caption(gui):
+    c, store, ctx, ids, tmp = gui
+    r = c.post(f"/clips/{ids[0]}/decide", data={"action": "approve", "caption": "edited caption"})
+    assert r.status_code == 302
+    clip = store.get_clip(ids[0])
+    assert clip["status"] == "posted" and "local-export" in clip["result"] and clip["caption"] == "edited caption"
+    exported = Path(ctx.cfg.data_path / "exports" / Path(clip["path"]).name)
+    assert exported.exists() and exported.with_suffix(".txt").read_text() == "edited caption"
+    assert b"posted" in c.get("/history").data
+    assert c.post(f"/clips/{ids[0]}/decide", data={"action": "reject"}).status_code == 302
+    assert store.get_clip(ids[0])["status"] == "posted"                  # cannot flip a handled clip
+
+
+def test_reject_moves_clip_out_of_queue(gui):
+    c, store, _, ids, _ = gui
+    c.post(f"/clips/{ids[1]}/decide", data={"action": "reject"})
+    assert store.get_clip(ids[1])["status"] == "rejected" and store.counts()["pending"] == 1
+    assert c.post(f"/clips/{ids[0]}/decide", data={"action": "nope"}).status_code == 400
+    assert c.post("/clips/999/decide", data={"action": "approve"}).status_code == 404
+
+
+def test_failed_publish_is_recorded_and_retry_works(gui, monkeypatch):
+    c, store, ctx, ids, _ = gui
+    ctx.environ["POSTFORME_API_KEY"] = "K"
+    ctx.session.routes = {"social-accounts": FakeResp(401, {})}
+    c.post(f"/clips/{ids[0]}/decide", data={"action": "approve"})
+    assert store.get_clip(ids[0])["status"] == "failed" and "401" in store.get_clip(ids[0])["result"]
+    ctx.environ.pop("POSTFORME_API_KEY")
+    c.post(f"/clips/{ids[0]}/retry")
+    assert store.get_clip(ids[0])["status"] == "posted"
+
+
+def test_add_and_remove_streamer_persists_to_yaml(gui):
+    c, store, ctx, *_ = gui
+    c.post("/streamers/add", data={"name": "@Kaicenat", "platform": "twitch"})
+    c.post("/streamers/add", data={"name": "yt", "platform": "youtube", "channel_id": "bad"})   # rejected: needs UC...
+    c.post("/streamers/add", data={"name": "Kaicenat", "platform": "twitch"})                    # duplicate
+    assert [s.key() for s in ctx.cfg.streamers] == ["twitch:kaicenat"]
+    from clipper.config import load_config
+    assert [s.name for s in load_config(ctx.cfg_path).streamers] == ["Kaicenat"]
+    c.post("/streamers/remove", data={"key": "twitch:kaicenat"})
+    assert ctx.cfg.streamers == []
+
+
+def test_settings_save_credentials_and_clip_options(gui):
+    c, store, ctx, *_ = gui
+    c.post("/settings", data={"TWITCH_CLIENT_ID": "id1", "TWITCH_CLIENT_SECRET": "sec1", "DISCORD_WEBHOOK_URL": "https://d/x",
+                              "pre_seconds": "45", "post_seconds": "25", "min_score": "2.5", "max_clips": "4", "vertical": "0", "caption": "{streamer} wow"})
+    assert ctx.environ["TWITCH_CLIENT_ID"] == "id1" and "twitch" in ctx.pipeline.watchers and ctx.pipeline.notifier.url == "https://d/x"
+    assert (ctx.cfg.clip.pre_seconds, ctx.cfg.clip.post_seconds, ctx.cfg.clip.vertical) == (45, 25, False)
+    html = c.get("/settings").data.decode()
+    assert "id1" not in html and "sec1" not in html                         # secrets are never echoed back
+    c.post("/settings", data={"pre_seconds": "9999"})
+    assert ctx.cfg.clip.pre_seconds == 45        # invalid value rejected AND rolled back
+
+
+def test_password_protects_every_page(gui):
+    import base64
+    c, store, ctx, ids, _ = gui
+    ctx.environ["GUI_PASSWORD"] = "s3cret"
+    for path in ("/", "/review", "/settings", "/api/state", "/media/x.mp4"):
+        assert c.get(path).status_code == 401, path
+    assert c.post(f"/clips/{ids[0]}/decide", data={"action": "approve"}).status_code == 401
+    assert store.get_clip(ids[0])["status"] == "pending"                     # nothing happened
+    bad = {"Authorization": "Basic " + base64.b64encode(b"me:wrong").decode()}
+    good = {"Authorization": "Basic " + base64.b64encode(b"me:s3cret").decode()}
+    assert c.get("/", headers=bad).status_code == 401
+    assert c.get("/", headers=good).status_code == 200
+    ctx.environ.pop("GUI_PASSWORD")
+    assert c.get("/").status_code == 200                                      # no password set = open (local use)

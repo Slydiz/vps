@@ -1,0 +1,16 @@
+# Copy to config.yaml. Streamers can also be added from the GUI (Streamers tab).
+streamers:
+  - {name: some_twitch_channel, platform: twitch}
+  - {name: some_kick_channel, platform: kick}
+  - {name: some_youtube_channel, platform: youtube, channel_id: UCxxxxxxxxxxxxxxxxxxxxxx}
+poll_seconds: 120        # how often to ask the APIs "who is live"
+segment_seconds: 600     # recording chunk length (10 min)
+gui_port: 8080
+caption_template: "{streamer} 🔥 #{platform} #clips #fyp"
+clip:
+  pre_seconds: 40        # kept before the peak (the video says 35-45)
+  post_seconds: 20
+  max_clips_per_segment: 3
+  min_score: 3.0         # lower = more clips
+  min_gap_seconds: 90
+  vertical: true         # 9:16 with blurred background
