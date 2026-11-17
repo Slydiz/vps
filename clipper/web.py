@@ -17,7 +17,7 @@ from flask import (Flask, Response, abort, jsonify, redirect, render_template_st
 from .config import (HIDDEN_SECRETS, PLATFORMS, SECRETS, SUGGESTED, Streamer, remove_env_key, save_config, save_env_values,
                      secret_status, validate)
 from .publisher import GoogleDeviceAuth, PublishError, QuotaExceeded, build_publishers, next_quota_reset
-from .watcher import WatchError, build_watchers, resolve_youtube_channel
+from .watcher import WatchError, build_watchers, check_twitch_credentials, resolve_youtube_channel
 
 CSS = """
 :root{--bg:#0f1115;--card:#171a21;--line:#262b36;--tx:#e8eaf0;--mut:#8b93a7;--ok:#2ecc71;--bad:#ff5d5d;--warn:#f5b942;--acc:#6c8cff}
@@ -419,6 +419,10 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
 <label>{{who}} — {{k}} {% if status[k] %}<span class="pill ok">set</span>{% else %}<span class="pill warn">missing</span>{% endif %}</label>
 <input type="password" name="{{k}}" autocomplete="off" placeholder="{{'•••••••• (leave empty to keep)' if status[k] else desc}}">
 {% endfor %}</div>
+<h2>Tests</h2>
+<div class="card sm"><div class="mut" style="margin-bottom:10px">Keys you typed above are saved when you press a test.</div>
+<div class="actions"><button type="submit" formaction="{{url_for('test_discord')}}" formnovalidate>🔔 Send a Discord test</button>
+<button type="submit" formaction="{{url_for('test_twitch')}}" formnovalidate>🟣 Test Twitch keys</button></div></div>
 <h2>Clipping</h2>
 <div class="card">
 <label>Seconds kept BEFORE the peak (video: 35–45)</label><input type="number" name="pre_seconds" min="0" max="120" value="{{cfg.clip.pre_seconds}}">
@@ -535,6 +539,23 @@ setTimeout(poll,iv);
         if size not in (180, 192, 512):
             abort(404)
         return Response(make_icon(size), mimetype="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
+    def _save_typed_keys():
+        save_env_values({k: request.form.get(k, "") for k in SECRETS if k not in HIDDEN_SECRETS}, ctx.env_path, ctx.environ)
+        ctx.rebuild()
+
+    @app.post("/test/discord")
+    def test_discord():
+        _save_typed_keys()
+        ctx.pipeline.notifier.url = ctx.environ.get("DISCORD_WEBHOOK_URL")
+        ok, msg = ctx.pipeline.notifier.test()
+        return redirect(url_for("settings", msg=("✅ " if ok else "❌ ") + msg))
+
+    @app.post("/test/twitch")
+    def test_twitch():
+        _save_typed_keys()
+        ok, msg = check_twitch_credentials(ctx.session, ctx.environ.get("TWITCH_CLIENT_ID", ""), ctx.environ.get("TWITCH_CLIENT_SECRET", ""))
+        return redirect(url_for("settings", msg=("✅ " if ok else "❌ ") + msg))
 
     @app.get("/api/state")
     def api_state():

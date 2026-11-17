@@ -46,3 +46,17 @@ class DiscordNotifier:
         return self._post({"embeds": [{"title": f"⚠️ {destination} daily limit reached",
                                        "description": f"Approved clips now wait in **To post by hand** (Review tab) until {reset_text}.\n"
                                                       f"[Open review]({self.review_url})", "color": 0xF5B942}]})
+
+    def test(self) -> tuple[bool, str]:
+        """Send a visible test message and explain the result in plain words."""
+        if not self.enabled:
+            return False, "No webhook saved yet: paste DISCORD_WEBHOOK_URL above and press Save"
+        try:
+            r = self.http.post(self.url, json={"content": "✅ Clip Pipeline test: Discord alerts work."}, timeout=15)
+        except Exception as e:
+            return False, f"Could not reach Discord ({type(e).__name__})"
+        if r.status_code in (200, 204):
+            return True, "Message sent: check your Discord channel"
+        if r.status_code in (401, 404):
+            return False, f"Discord refused the webhook (HTTP {r.status_code}): the link is wrong or was deleted, create a new one"
+        return False, f"Discord answered HTTP {r.status_code}"

@@ -108,3 +108,6 @@ YouTube does not report the game, so the stream title must contain one of your k
 Approving a clip after YouTube's daily quota is used up does not fail: the clip moves to **To post by hand** at the top of the Review tab and Discord warns you once.
 For each one: ⬇ Download + 📋 Copy caption, post it yourself, tap **✓ I posted it**. Or tap **↻ Retry all now** after the reset (midnight Pacific time = 9:00 in Paris).
 Until the reset the app does not contact YouTube again, so no quota is wasted. If another destination (Post for Me) already succeeded, it is never posted twice.
+
+## Check your keys
+Settings → **Tests**: **🔔 Send a Discord test** posts a message in your channel (HTTP 204 = it works) and **🟣 Test Twitch keys** checks the Client ID and Secret. Keys typed in the form are saved when you press a test.

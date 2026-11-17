@@ -532,3 +532,44 @@ def test_other_youtube_errors_still_count_as_failures(gui):
                           "upload/youtube/v3/videos": FakeResp(500, {}, text="boom")}
     c.post(f"/clips/{ids[0]}/decide", data={"action": "approve"})
     assert store.get_clip(ids[0])["status"] == "failed" and "youtube" not in ctx.blocked_until
+
+
+def test_discord_test_button(gui):
+    from clipper.notifier import DiscordNotifier
+    c, store, ctx, ids, tmp = gui
+    ctx.pipeline.notifier = DiscordNotifier(ctx.session, None)
+    def msg(resp): return resp.get_data(as_text=True)
+    r = c.post("/test/discord", follow_redirects=True)
+    assert "No webhook saved" in msg(r)
+    ctx.session.routes = {"discord.com": FakeResp(204)}
+    r = c.post("/test/discord", data={"DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/1/abc"}, follow_redirects=True)
+    assert "Message sent" in msg(r) and ctx.environ["DISCORD_WEBHOOK_URL"].endswith("/abc")       # typed key was saved
+    assert "DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/1/abc" in (tmp / ".env").read_text()
+    sent = [k for m, u, k in ctx.session.calls if "discord.com" in u][-1]
+    assert "test" in sent["json"]["content"].lower()
+    ctx.session.routes = {"discord.com": FakeResp(404)}
+    assert "refused the webhook" in msg(c.post("/test/discord", follow_redirects=True))
+    ctx.session.routes = {"discord.com": FakeResp(500)}
+    assert "HTTP 500" in msg(c.post("/test/discord", follow_redirects=True))
+
+
+def test_discord_test_button_when_discord_unreachable(gui):
+    c, store, ctx, *_ = gui
+    class Down:
+        def post(self, *a, **k): raise ConnectionError("down")
+    from clipper.notifier import DiscordNotifier
+    ctx.session = Down(); ctx.pipeline.notifier = DiscordNotifier(ctx.session, None)
+    ctx.environ["DISCORD_WEBHOOK_URL"] = "https://discord.com/api/webhooks/1/x"
+    assert "Could not reach Discord" in c.post("/test/discord", follow_redirects=True).get_data(as_text=True)
+
+
+def test_twitch_test_button(gui):
+    c, store, ctx, *_ = gui
+    html = lambda r: r.get_data(as_text=True)
+    assert "not both saved" in html(c.post("/test/twitch", follow_redirects=True))
+    ctx.session.routes = {"id.twitch.tv": FakeResp(200, {"access_token": "t", "expires_in": 3600})}
+    r = c.post("/test/twitch", data={"TWITCH_CLIENT_ID": "id", "TWITCH_CLIENT_SECRET": "s3cr3t-xyz"}, follow_redirects=True)
+    assert "Twitch accepted" in html(r) and "twitch" in ctx.pipeline.watchers
+    ctx.session.routes = {"id.twitch.tv": FakeResp(403, {})}
+    assert "Twitch refused" in html(c.post("/test/twitch", follow_redirects=True))
+    assert "s3cr3t-xyz" not in html(c.get("/settings"))

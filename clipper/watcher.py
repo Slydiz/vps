@@ -210,3 +210,18 @@ def resolve_youtube_channel(session, api_key: str, text: str) -> str:
     if not items:
         raise WatchError(f"No YouTube channel found for {val}")
     return items[0]["id"]
+
+
+def check_twitch_credentials(session, client_id: str, client_secret: str) -> tuple[bool, str]:
+    if not (client_id and client_secret):
+        return False, "Twitch Client ID and Client Secret are not both saved yet"
+    try:
+        r = session.post("https://id.twitch.tv/oauth2/token", data={
+            "client_id": client_id, "client_secret": client_secret, "grant_type": "client_credentials"}, timeout=15)
+    except Exception as e:
+        return False, f"Could not reach Twitch ({type(e).__name__})"
+    if r.status_code == 200:
+        return True, "Twitch accepted your keys"
+    if r.status_code in (400, 401, 403):
+        return False, "Twitch refused the keys: check the Client ID, and create a New Secret if unsure (application, not extension)"
+    return False, f"Twitch answered HTTP {r.status_code}"
