@@ -230,3 +230,31 @@ def test_remove_env_key(tmp_path):
     (tmp_path / ".env").write_text("A=1\nB=2\n")
     config.remove_env_key("A", tmp_path / ".env", env)
     assert env == {"B": "2"} and (tmp_path / ".env").read_text() == "B=2\n"
+
+
+def test_config_game_filter_defaults_and_roundtrip(tmp_path):
+    c = config.load_config(tmp_path / "none.yaml")
+    assert "gta 6" in c.game_filter and c.keep_recordings is False and c.quality.startswith("720p")
+    c.game_filter = ["a b", "c"]; c.match_title = True
+    config.save_config(c, tmp_path / "o.yaml")
+    c2 = config.load_config(tmp_path / "o.yaml")
+    assert c2.game_filter == ["a b", "c"] and c2.match_title is True
+    (tmp_path / "e.yaml").write_text("game_filter: []\n")
+    assert config.load_config(tmp_path / "e.yaml").game_filter == []
+
+
+def test_recorder_uses_quality_preference(tmp_path):
+    sl, _ = recorder.build_commands("https://twitch.tv/x", tmp_path, "p", "s", 600, "720p60,720p,best")
+    assert sl[-1] == "720p60,720p,best"
+
+
+def test_store_migrates_old_database(tmp_path):
+    import sqlite3
+    db = sqlite3.connect(tmp_path / "old.db")
+    db.executescript("CREATE TABLE streamers_state(key TEXT PRIMARY KEY, name TEXT, platform TEXT, live INTEGER DEFAULT 0, "
+                     "title TEXT DEFAULT '', url TEXT DEFAULT '', recording INTEGER DEFAULT 0, last_checked REAL, error TEXT DEFAULT '');")
+    db.execute("INSERT INTO streamers_state(key,name,platform) VALUES('twitch:a','a','twitch')"); db.commit(); db.close()
+    s = Store(tmp_path / "old.db")
+    s.set_streamer_state("twitch:a", "a", "twitch", game="GTA", ignored=True)
+    r = s.get_streamer_state("twitch:a")
+    assert r["game"] == "GTA" and r["ignored"] == 1

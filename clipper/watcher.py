@@ -22,6 +22,7 @@ class LiveInfo:
     url: str = ""
     started_at: str | None = None
     viewers: int | None = None
+    game: str | None = None      # None = the platform does not tell (YouTube)
 
 
 class WatchError(Exception):
@@ -77,7 +78,8 @@ class TwitchWatcher:
         if not data:
             return LiveInfo(False)
         d = data[0]
-        return LiveInfo(d.get("type") == "live", d.get("title", ""), stream_url(s), d.get("started_at"), d.get("viewer_count"))
+        return LiveInfo(d.get("type") == "live", d.get("title", ""), stream_url(s), d.get("started_at"), d.get("viewer_count"),
+                        d.get("game_name", ""))
 
 
 class YouTubeWatcher:
@@ -140,7 +142,8 @@ class KickWatcher:
         st = ch.get("stream") or {}
         if not st.get("is_live"):
             return LiveInfo(False)
-        return LiveInfo(True, ch.get("stream_title", ""), stream_url(s), st.get("start_time"), st.get("viewer_count"))
+        return LiveInfo(True, ch.get("stream_title", ""), stream_url(s), st.get("start_time"), st.get("viewer_count"),
+                        (ch.get("category") or {}).get("name", ""))
 
 
 def build_watchers(session, environ) -> tuple[dict, dict[str, str]]:
@@ -159,3 +162,14 @@ def build_watchers(session, environ) -> tuple[dict, dict[str, str]]:
     else:
         missing["kick"] = "needs KICK_CLIENT_ID and KICK_CLIENT_SECRET"
     return w, missing
+
+
+def matches_game(info: LiveInfo, keywords: list[str], match_title: bool = False) -> bool:
+    """True when the stream should be recorded. No keywords = record everything.
+    Twitch/Kick give the category; YouTube does not, so its title is used."""
+    kws = [k.strip().lower() for k in keywords if k and k.strip()]
+    if not kws:
+        return True
+    title = (info.title or "").lower()
+    hay = title if info.game is None else (info.game.lower() + (" | " + title if match_title else ""))
+    return any(k in hay for k in kws)

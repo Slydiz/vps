@@ -86,3 +86,15 @@ On a phone the GUI switches to a bottom tab bar with large buttons. Open it in t
 5. Approve a clip: it uploads as a Short. Limits: about **6 uploads a day** on the default quota, and Google may keep videos from brand-new unaudited projects private until you request an API audit (pick *private/unlisted* in Settings to see what happens first).
 
 If several destinations are set (Post for Me and YouTube), one Approve sends to all of them. A failed destination is retried alone: the others are never posted twice.
+
+## Only record the right game
+Settings → **Only record streams whose game matches**. Default keywords: `grand theft auto vi, gta vi, gta 6, grand theft auto 6`.
+* Twitch and Kick tell us the category, so a streamer who is live on another game is shown as "live: <game> · not recorded" on the Dashboard and nothing is recorded or announced.
+* If the streamer switches game mid-stream, recording stops (and restarts when they come back to the matching game).
+* If a streamer's category is not named like the keywords (Twitch may name it differently on launch day), the Dashboard shows the real category name: add it to the list, or set **Also look for those words in the stream title** to Yes.
+* YouTube does not expose the category, so the title is used.
+* Empty list = record everything.
+
+## Disk and bandwidth
+Raw recordings are about 1 GB per 10 minutes per stream at 720p60. They are deleted as soon as the clips are cut (Settings → keep raw recordings = No). Only matching streams are recorded, but start with 4-6 streamers: each live recording downloads about 3-6 Mbit/s continuously.
+After a restart, segments that were recorded but not analysed are processed automatically.

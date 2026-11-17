@@ -1,5 +1,5 @@
 from clipper.config import Streamer
-from clipper.watcher import TwitchWatcher, YouTubeWatcher, KickWatcher, WatchError, build_watchers
+from clipper.watcher import TwitchWatcher, YouTubeWatcher, KickWatcher, WatchError, build_watchers, LiveInfo, matches_game
 from conftest import FakeHttp, FakeResp
 import pytest
 
@@ -7,12 +7,12 @@ TOK = FakeResp(200, {"access_token": "T", "expires_in": 3600})
 
 
 def test_twitch_live_and_offline():
-    h = FakeHttp({"oauth2/token": TOK, "helix/streams": [FakeResp(200, {"data": [{"type": "live", "title": "hello", "started_at": "x", "viewer_count": 5}]}),
+    h = FakeHttp({"oauth2/token": TOK, "helix/streams": [FakeResp(200, {"data": [{"type": "live", "title": "hello", "started_at": "x", "viewer_count": 5, "game_name": "Grand Theft Auto VI"}]}),
                                                          FakeResp(200, {"data": []})]})
     w = TwitchWatcher(h, "id", "sec")
     s = Streamer("kai", "twitch")
     a = w.check(s)
-    assert a.live and a.title == "hello" and a.url == "https://www.twitch.tv/kai" and a.viewers == 5
+    assert a.live and a.title == "hello" and a.url == "https://www.twitch.tv/kai" and a.viewers == 5 and a.game == "Grand Theft Auto VI"
     assert not w.check(s).live
     auth = [c for c in h.calls if "helix" in c[1]][0][2]["headers"]
     assert auth["Authorization"] == "Bearer T" and auth["Client-Id"] == "id"
@@ -51,12 +51,13 @@ def test_youtube_offline_when_all_ended():
 
 
 def test_kick_live_offline_and_unknown_channel():
-    live = {"data": [{"stream_title": "T", "stream": {"is_live": True, "viewer_count": 9, "start_time": "s"}}]}
+    live = {"data": [{"stream_title": "T", "category": {"id": 1, "name": "Grand Theft Auto VI"}, "stream": {"is_live": True, "viewer_count": 9, "start_time": "s"}}]}
     off = {"data": [{"stream_title": "", "stream": {"is_live": False}}]}
     h = FakeHttp({"oauth/token": TOK, "public/v1/channels": [FakeResp(200, live), FakeResp(200, off), FakeResp(200, {"data": []})]})
     w = KickWatcher(h, "i", "s")
     s = Streamer("xqc", "kick")
-    assert w.check(s).live
+    first = w.check(s)
+    assert first.live and first.game == "Grand Theft Auto VI"
     assert not w.check(s).live
     with pytest.raises(WatchError):
         w.check(s)
@@ -65,3 +66,18 @@ def test_kick_live_offline_and_unknown_channel():
 def test_build_watchers_reports_missing_credentials():
     w, missing = build_watchers(FakeHttp(), {"TWITCH_CLIENT_ID": "a", "TWITCH_CLIENT_SECRET": "b"})
     assert set(w) == {"twitch"} and set(missing) == {"youtube", "kick"}
+
+
+KW = ["grand theft auto vi", "gta 6", "gta vi"]
+
+
+def test_matches_game():
+    assert matches_game(LiveInfo(True, "x", game="Grand Theft Auto VI"), KW)
+    assert matches_game(LiveInfo(True, "x", game="GRAND THEFT AUTO VI"), KW)
+    assert not matches_game(LiveInfo(True, "gta 6 later", game="Just Chatting"), KW)             # title ignored by default
+    assert matches_game(LiveInfo(True, "gta 6 later", game="Just Chatting"), KW, match_title=True)
+    assert not matches_game(LiveInfo(True, "x", game="Grand Theft Auto V"), KW)                    # GTA V is not GTA VI
+    assert matches_game(LiveInfo(True, "GTA 6 !!", game=None), KW)                                # YouTube: title only
+    assert not matches_game(LiveInfo(True, "Minecraft", game=None), KW)
+    assert matches_game(LiveInfo(True, "anything", game="Chess"), [])                              # no filter = everything
+    assert matches_game(LiveInfo(True, "anything", game="Chess"), ["", "  "])

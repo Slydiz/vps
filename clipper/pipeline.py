@@ -9,8 +9,8 @@ from . import detector
 from .chat import TwitchChat, load_chat
 from .clipper import cut_clip, make_thumbnail
 from .config import Config, Streamer
-from .recorder import Recorder, segment_start_epoch, safe_name
-from .watcher import WatchError
+from .recorder import Recorder, parse_segment_name, safe_name, segment_start_epoch
+from .watcher import WatchError, matches_game
 
 
 class Pipeline:
@@ -21,6 +21,7 @@ class Pipeline:
         self.recorders: dict[str, Recorder] = {}
         self.chats: dict[str, TwitchChat] = {}
         self.live_prev: dict[str, bool] = {}
+        self.finished: list[tuple[str, Recorder, Path]] = []   # stopped recorders whose last segments are still to process
         self.rec_dir = cfg.data_path / "recordings"
         self.clip_dir = cfg.data_path / "clips"
         self.chat_dir = cfg.data_path / "chat"
@@ -39,28 +40,30 @@ class Pipeline:
                 self.store.set_streamer_state(key, s.name, s.platform, error=str(e)[:200])
                 self.store.log(f"{key}: check failed: {e}", "warn")
                 continue
-            self.store.set_streamer_state(key, s.name, s.platform, live=info.live, title=info.title,
-                                          url=info.url, error="")
+            on_air = info.live and matches_game(info, self.cfg.game_filter, self.cfg.match_title)
+            self.store.set_streamer_state(key, s.name, s.platform, live=info.live, title=info.title, url=info.url,
+                                          error="", game=info.game or "", ignored=info.live and not on_air)
             was = self.live_prev.get(key, False)
-            if info.live and not was:
-                self.store.log(f"{key} went live: {info.title}")
-                self.notifier.stream_live(s.name, s.platform, info.title, info.url)
+            if on_air and not was:
+                self.store.log(f"{key} is live with a matching stream: {info.game or info.title}")
+                self.notifier.stream_live(s.name, s.platform, f"{info.game or ''} — {info.title}".strip(" —"), info.url)
                 self._start_recording(s, info.url)
-            elif not info.live and was:
-                self.store.log(f"{key} went offline")
+            elif not on_air and was:
+                why = "went offline" if not info.live else f"switched to {info.game or 'another game'}"
+                self.store.log(f"{key} {why}")
                 self.notifier.stream_ended(s.name)
                 self._stop_recording(key)
-            elif info.live and key not in self.recorders:  # live at startup or recorder died
+            elif on_air and key not in self.recorders:  # live at startup
                 self._start_recording(s, info.url)
-            elif info.live and key in self.recorders and not self.recorders[key].alive():
+            elif on_air and not self.recorders[key].alive():
                 self.store.log(f"{key}: recorder died, restarting", "warn")
                 self._stop_recording(key)
                 self._start_recording(s, info.url)
-            self.live_prev[key] = info.live
+            self.live_prev[key] = on_air
 
     def _start_recording(self, s: Streamer, url: str):
         key = s.key()
-        rec = self.recorder_factory(key, url, self.rec_dir, self.cfg.segment_seconds)
+        rec = self.recorder_factory(key, url, self.rec_dir, self.cfg.segment_seconds, self.cfg.quality)
         rec.start()
         self.recorders[key] = rec
         self.store.set_streamer_state(key, s.name, s.platform, recording=True)
@@ -74,6 +77,7 @@ class Pipeline:
         rec = self.recorders.pop(key, None)
         if rec:
             rec.stop()
+            self.finished.append((key, rec, self.chat_dir / f"{safe_name(key)}_{rec.stamp}.jsonl"))
         chat = self.chats.pop(key, None)
         if chat:
             chat.stop()
@@ -85,12 +89,44 @@ class Pipeline:
     def scan_segments(self) -> int:
         n = 0
         for key, rec in list(self.recorders.items()):
-            chat_file = self.chat_dir / f"{safe_name(key)}_{rec.stamp}.jsonl"
-            for seg in rec.completed_segments():
-                if self.store.segment_done(seg):
-                    continue
-                n += len(self.process_segment(seg, key, chat_file))
-        # finished recordings whose recorder was stopped: leftover files are handled by process_leftovers()
+            n += self._process_recorder(key, rec, self.chat_dir / f"{safe_name(key)}_{rec.stamp}.jsonl")
+        for item in list(self.finished):          # stream ended: process the last (partial) segments, then forget it
+            key, rec, chat_file = item
+            n += self._process_recorder(key, rec, chat_file)
+            if all(self.store.segment_done(p) for p in rec.completed_segments()):
+                self.finished.remove(item)
+        return n
+
+    def _process_recorder(self, key, rec, chat_file) -> int:
+        n = 0
+        for seg in rec.completed_segments():
+            if self.store.segment_done(seg):
+                continue
+            n += len(self.process_segment(seg, key, chat_file))
+            self._cleanup(seg)
+        return n
+
+    def _cleanup(self, seg: Path):
+        """Raw segments are ~1 GB per 10 min: delete them once clips are cut (unless keep_recordings)."""
+        if not self.cfg.keep_recordings and self.store.segment_done(seg):
+            try:
+                seg.unlink()
+            except OSError:
+                pass
+
+    def process_leftovers(self) -> int:
+        """After a restart: process segments a previous run recorded but never analysed."""
+        n = 0
+        for seg in sorted(self.rec_dir.glob("*.ts")) if self.rec_dir.exists() else []:
+            if self.store.segment_done(seg) or time.time() - seg.stat().st_mtime < 90:
+                continue                                           # done already, or still being written
+            info = parse_segment_name(seg)
+            if not info:
+                continue
+            key = info["prefix"].replace("-", ":", 1)               # 'twitch-kai' -> 'twitch:kai'
+            stamp = seg.name.split("_")[-2]
+            n += len(self.process_segment(seg, key, self.chat_dir / f"{info['prefix']}_{stamp}.jsonl"))
+            self._cleanup(seg)
         return n
 
     def process_segment(self, seg: Path, streamer_key: str, chat_file: Path | None = None) -> list[int]:
@@ -105,6 +141,7 @@ class Pipeline:
                 audio_weight=c.audio_weight, chat_weight=c.chat_weight)
         except Exception as e:
             self.store.log(f"{seg.name}: detection failed: {e}", "error")
+            self.store.mark_segment(seg, streamer_key, 0)      # do not retry a broken file forever
             return []
         ids = []
         for m in moments:
@@ -134,6 +171,10 @@ class Pipeline:
 
     def run_forever(self, stop: threading.Event):
         last_poll = 0.0
+        try:
+            self.process_leftovers()
+        except Exception as e:
+            self.store.log(f"leftover recovery failed: {e}", "error")
         while not stop.is_set():
             if time.time() - last_poll >= self.cfg.poll_seconds:
                 try:

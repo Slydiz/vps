@@ -41,8 +41,8 @@ def segment_start_epoch(path: str | Path, segment_seconds: int) -> float:
 class Recorder:
     """Owns one streamlink|ffmpeg process pair for one streamer."""
 
-    def __init__(self, streamer_key: str, url: str, out_dir: Path, segment_seconds: int):
-        self.key, self.url, self.out_dir, self.seg = streamer_key, url, Path(out_dir), segment_seconds
+    def __init__(self, streamer_key: str, url: str, out_dir: Path, segment_seconds: int, quality: str = "best"):
+        self.key, self.url, self.out_dir, self.seg, self.quality = streamer_key, url, Path(out_dir), segment_seconds, quality
         self.prefix = safe_name(streamer_key)
         self.stamp = time.strftime("%Y%m%d%H%M%S")
         self.started = time.time()
@@ -50,7 +50,7 @@ class Recorder:
 
     def start(self):
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        sl, ff = build_commands(self.url, self.out_dir, self.prefix, self.stamp, self.seg)
+        sl, ff = build_commands(self.url, self.out_dir, self.prefix, self.stamp, self.seg, self.quality)
         self._sl = subprocess.Popen(sl, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self._ff = subprocess.Popen(ff, stdin=self._sl.stdout, stderr=subprocess.DEVNULL)
         self._sl.stdout.close()

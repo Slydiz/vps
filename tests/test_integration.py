@@ -38,6 +38,7 @@ class Spy:
 def make_pipeline(tmp_path, watchers=None, streamers=(), vertical=False):
     cfg = Config(data_dir=str(tmp_path / "data"), streamers=list(streamers))
     cfg.clip.vertical = vertical
+    cfg.game_filter = []                      # most tests record any game; the filter has its own tests below
     store = Store(tmp_path / "t.db")
     spy = Spy()
     return cfg, store, spy, Pipeline(cfg, store, watchers or {}, spy)
@@ -100,7 +101,7 @@ class FakeWatcher:
 
 class FakeRecorder:
     started, stopped = [], []
-    def __init__(self, key, url, out_dir, seg): self.key, self.stamp, self.url = key, "S", url
+    def __init__(self, key, url, out_dir, seg, quality="best"): self.key, self.stamp, self.url, self.quality = key, "S", url, quality
     def start(self): FakeRecorder.started.append(self.key)
     def stop(self): FakeRecorder.stopped.append(self.key)
     def alive(self): return True
@@ -323,3 +324,109 @@ def test_connect_youtube_without_client_keys_explains(gui):
     r = c.post("/youtube/connect", follow_redirects=True)
     assert b"GOOGLE_CLIENT_ID" in r.data
     assert c.get("/youtube/poll").get_json()["status"] == "error"
+
+
+# ---------------------------------------------------------------- game filter, cleanup, recovery
+def _filtered_pipeline(tmp_path, seq, platform="twitch"):
+    FakeRecorder.started, FakeRecorder.stopped = [], []
+    s = Streamer("kai", platform)
+    cfg, store, spy, _ = make_pipeline(tmp_path, streamers=[s])
+    cfg.game_filter = ["grand theft auto vi", "gta 6"]
+    p = Pipeline(cfg, store, {platform: FakeWatcher(seq)}, spy, recorder_factory=FakeRecorder, chat_factory=FakeChat)
+    return p, store, spy
+
+
+def test_other_games_are_not_recorded_or_announced(tmp_path):
+    p, store, spy = _filtered_pipeline(tmp_path, [LiveInfo(True, "ranked grind", "u", game="League of Legends")])
+    p.poll()
+    st = store.get_streamer_state("twitch:kai")
+    assert FakeRecorder.started == [] and spy.events == []
+    assert st["live"] == 1 and st["ignored"] == 1 and st["game"] == "League of Legends"
+
+
+def test_gta6_stream_is_recorded_and_game_switch_stops_and_restarts(tmp_path):
+    gta = LiveInfo(True, "GTA 6 DAY 1", "u", game="Grand Theft Auto VI")
+    lol = LiveInfo(True, "chill", "u", game="League of Legends")
+    p, store, spy = _filtered_pipeline(tmp_path, [lol, gta, gta, lol, gta])
+    p.poll(); assert FakeRecorder.started == []
+    p.poll(); assert FakeRecorder.started == ["twitch:kai"] and ("live", "kai") in spy.events
+    assert store.get_streamer_state("twitch:kai")["ignored"] == 0
+    p.poll(); assert len(FakeRecorder.started) == 1
+    p.poll(); assert FakeRecorder.stopped == ["twitch:kai"] and ("ended", "kai") in spy.events      # switched to LoL
+    p.poll(); assert len(FakeRecorder.started) == 2                                                  # back to GTA
+
+
+def test_youtube_has_no_category_so_title_is_used(tmp_path):
+    p, store, spy = _filtered_pipeline(tmp_path, [LiveInfo(True, "Playing GTA 6 live!", "u", game=None)], platform="youtube")
+    p.cfg.streamers[0].channel_id = "UCx"
+    p.poll(); assert FakeRecorder.started == ["youtube:kai"]
+    p2, _, _ = _filtered_pipeline(tmp_path / "b", [LiveInfo(True, "Minecraft", "u", game=None)], platform="youtube")
+    p2.poll(); assert FakeRecorder.started == []
+
+
+def test_stream_end_still_processes_last_segments_and_deletes_raw_files(tmp_path, stream):
+    import shutil
+    seg_src, chat, _ = stream
+    cfg, store, spy, p = make_pipeline(tmp_path)
+    rec_dir = cfg.data_path / "recordings"; rec_dir.mkdir(parents=True)
+    seg = rec_dir / seg_src.name; shutil.copy(seg_src, seg)
+
+    class Done:                                   # a recorder that already stopped (stream ended)
+        stamp = "20260101120000"
+        def alive(self): return False
+        def completed_segments(self): return [seg]
+    p.finished.append(("twitch:demo", Done(), chat))
+    assert p.scan_segments() == 2
+    assert not seg.exists()                       # raw recording deleted after clipping
+    assert p.finished == []                       # nothing left to process
+    assert store.counts()["pending"] == 2
+
+
+def test_keep_recordings_option_keeps_the_raw_file(tmp_path, stream):
+    import shutil
+    seg_src, chat, _ = stream
+    cfg, store, spy, p = make_pipeline(tmp_path)
+    cfg.keep_recordings = True
+    rec_dir = cfg.data_path / "recordings"; rec_dir.mkdir(parents=True)
+    seg = rec_dir / seg_src.name; shutil.copy(seg_src, seg)
+    p.process_segment(seg, "twitch:demo", chat); p._cleanup(seg)
+    assert seg.exists()
+
+
+def test_restart_recovers_unprocessed_segments(tmp_path, stream):
+    import os, shutil
+    seg_src, chat, _ = stream
+    cfg, store, spy, p = make_pipeline(tmp_path)
+    rec_dir = cfg.data_path / "recordings"; rec_dir.mkdir(parents=True)
+    old = rec_dir / seg_src.name; shutil.copy(seg_src, old)
+    os.utime(old, (time.time() - 3600, time.time() - 3600))
+    fresh = rec_dir / "twitch-live_20260101130000_000.ts"; shutil.copy(seg_src, fresh)       # still being written
+    assert p.process_leftovers() == 2
+    assert fresh.exists() and not old.exists()
+    assert {c["streamer_key"] for c in store.clips()} == {"twitch:demo"}
+    assert p.process_leftovers() == 0                                                            # idempotent
+
+
+def test_broken_segment_is_not_retried_forever(tmp_path):
+    cfg, store, spy, p = make_pipeline(tmp_path)
+    bad = tmp_path / "twitch-x_20260101120000_000.ts"; bad.write_bytes(b"not a video")
+    assert p.process_segment(bad, "twitch:x", None) == [] and store.segment_done(bad)
+
+
+def test_game_filter_settings_roundtrip(gui):
+    c, store, ctx, *_ = gui
+    c.post("/settings", data={"game_filter": "GTA 6, Grand Theft Auto VI\nvice city", "match_title": "1", "keep_recordings": "1"})
+    assert ctx.cfg.game_filter == ["GTA 6", "Grand Theft Auto VI", "vice city"] and ctx.cfg.match_title and ctx.cfg.keep_recordings
+    from clipper.config import load_config
+    assert load_config(ctx.cfg_path).game_filter == ["GTA 6", "Grand Theft Auto VI", "vice city"]
+    c.post("/settings", data={"game_filter": ""})
+    assert ctx.cfg.game_filter == []
+
+
+def test_dashboard_explains_ignored_live(gui):
+    c, store, ctx, *_ = gui
+    from clipper.config import Streamer
+    ctx.cfg.streamers.append(Streamer("kai", "twitch"))
+    store.set_streamer_state("twitch:kai", "kai", "twitch", live=True, title="ranked", game="League of Legends", ignored=True)
+    html = c.get("/").data.decode()
+    assert "League of Legends" in html and "not recorded" in html

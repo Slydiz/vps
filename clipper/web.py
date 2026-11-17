@@ -157,10 +157,11 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
 {% for s in streamers %}{% set st = state.get(s.key()) %}
  <div class="card"><div class="row"><b>{{s.name}}</b><span class="sp"></span><span class="pill">{{s.platform}}</span></div>
   <div style="margin:8px 0">
-  {% if st and st.live %}<span class="pill live">● LIVE</span>{% if st.recording %} <span class="pill ok">recording</span>{% endif %}
+  {% if st and st.live and st.ignored %}<span class="pill warn">live: {{st.game or 'other'}} · not recorded</span>
+  {% elif st and st.live %}<span class="pill live">● LIVE</span>{% if st.recording %} <span class="pill ok">recording</span>{% endif %}
   {% elif s.platform in missing %}<span class="pill warn">needs credentials</span>
   {% else %}<span class="pill">offline</span>{% endif %}</div>
-  <div class="sm mut">{{st.title if st and st.live else ''}}</div>
+  <div class="sm mut">{{(st.game + ' — ' if st.game else '') + st.title if st and st.live else ''}}</div>
   {% if st and st.error %}<div class="sm" style="color:var(--bad)">{{st.error}}</div>{% endif %}
   <div class="sm mut">checked {{fmt_ts(st.last_checked) if st else 'never'}}</div></div>
 {% endfor %}</div>
@@ -346,6 +347,9 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
 <label>Max clips per 10-minute segment</label><input type="number" name="max_clips" min="1" max="10" value="{{cfg.clip.max_clips_per_segment}}">
 <label>Vertical 9:16 for TikTok / Shorts / Reels</label><select name="vertical"><option value="1" {{'selected' if cfg.clip.vertical}}>Yes</option><option value="0" {{'selected' if not cfg.clip.vertical}}>No (keep original)</option></select>
 <label>Caption template ({streamer} and {platform} are replaced)</label><input name="caption" value="{{cfg.caption_template}}">
+<label>Only record streams whose game matches (comma separated, empty = record everything)</label><input name="game_filter" value="{{cfg.game_filter|join(', ')}}">
+<label>Also look for those words in the stream title</label><select name="match_title"><option value="0" {{'selected' if not cfg.match_title}}>No (game category only)</option><option value="1" {{'selected' if cfg.match_title}}>Yes</option></select>
+<label>Keep the raw recordings (uses a lot of disk: about 1 GB per 10 minutes)</label><select name="keep_recordings"><option value="0" {{'selected' if not cfg.keep_recordings}}>No, delete after clipping</option><option value="1" {{'selected' if cfg.keep_recordings}}>Yes</option></select>
 <label>YouTube Shorts visibility</label><select name="youtube_privacy">{% for v in ("public","unlisted","private") %}<option {{'selected' if cfg.youtube_privacy==v}}>{{v}}</option>{% endfor %}</select>
 </div><div style="margin-top:14px"><button class="acc">Save</button></div></form>
 <h2>YouTube Shorts (free)</h2>
@@ -365,7 +369,8 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
     def settings_save():
         save_env_values({k: request.form.get(k, "") for k in SECRETS if k not in HIDDEN_SECRETS}, ctx.env_path, ctx.environ)
         c = cfg.clip
-        backup = (c.pre_seconds, c.post_seconds, c.min_score, c.max_clips_per_segment, c.vertical, cfg.caption_template, cfg.youtube_privacy)
+        backup = (c.pre_seconds, c.post_seconds, c.min_score, c.max_clips_per_segment, c.vertical, cfg.caption_template, cfg.youtube_privacy,
+                  list(cfg.game_filter), cfg.match_title, cfg.keep_recordings)
         try:
             c.pre_seconds = int(request.form.get("pre_seconds", c.pre_seconds))
             c.post_seconds = int(request.form.get("post_seconds", c.post_seconds))
@@ -374,9 +379,14 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
             c.vertical = request.form.get("vertical", "1") == "1"
             cfg.caption_template = request.form.get("caption", cfg.caption_template) or cfg.caption_template
             cfg.youtube_privacy = request.form.get("youtube_privacy", cfg.youtube_privacy)
+            if "game_filter" in request.form:
+                cfg.game_filter = [g.strip() for g in re.split(r"[,\n]", request.form["game_filter"]) if g.strip()]
+            cfg.match_title = request.form.get("match_title", "1" if cfg.match_title else "0") == "1"
+            cfg.keep_recordings = request.form.get("keep_recordings", "1" if cfg.keep_recordings else "0") == "1"
             validate(cfg)
         except ValueError as e:
-            (c.pre_seconds, c.post_seconds, c.min_score, c.max_clips_per_segment, c.vertical, cfg.caption_template, cfg.youtube_privacy) = backup
+            (c.pre_seconds, c.post_seconds, c.min_score, c.max_clips_per_segment, c.vertical, cfg.caption_template, cfg.youtube_privacy,
+             cfg.game_filter, cfg.match_title, cfg.keep_recordings) = backup
             return redirect(url_for("settings", msg=f"Not saved: {e}"))
         save_config(cfg, ctx.cfg_path)
         ctx.rebuild()

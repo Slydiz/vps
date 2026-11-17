@@ -10,7 +10,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS streamers_state(
   key TEXT PRIMARY KEY, name TEXT, platform TEXT, live INTEGER DEFAULT 0,
   title TEXT DEFAULT '', url TEXT DEFAULT '', recording INTEGER DEFAULT 0,
-  last_checked REAL, error TEXT DEFAULT '');
+  last_checked REAL, error TEXT DEFAULT '', game TEXT DEFAULT '', ignored INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS segments(
   path TEXT PRIMARY KEY, streamer_key TEXT, processed_at REAL, clips INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS clips(
@@ -27,12 +27,17 @@ CLIP_STATUSES = ("pending", "approved", "rejected", "posted", "failed")
 
 class Store:
     def __init__(self, path: str | Path):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.path = str(path)
         self._lock = threading.RLock()
         self._db = sqlite3.connect(self.path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         with self._lock:
             self._db.executescript(SCHEMA)
+            cols = {r[1] for r in self._db.execute("PRAGMA table_info(streamers_state)")}
+            for col, ddl in (("game", "TEXT DEFAULT ''"), ("ignored", "INTEGER DEFAULT 0")):   # older databases
+                if col not in cols:
+                    self._db.execute(f"ALTER TABLE streamers_state ADD COLUMN {col} {ddl}")
             self._db.commit()
 
     # -- helpers
@@ -59,13 +64,14 @@ class Store:
 
     # -- streamers
     def set_streamer_state(self, key, name, platform, *, live=None, title=None, url=None,
-                           recording=None, error=None):
+                           recording=None, error=None, game=None, ignored=None):
         row = self._one("SELECT * FROM streamers_state WHERE key=?", (key,))
         if row is None:
             self._exec("INSERT INTO streamers_state(key,name,platform) VALUES(?,?,?)", (key, name, platform))
             row = self._one("SELECT * FROM streamers_state WHERE key=?", (key,))
         upd = {"last_checked": time.time()}
-        for k, v in (("live", live), ("title", title), ("url", url), ("recording", recording), ("error", error)):
+        for k, v in (("live", live), ("title", title), ("url", url), ("recording", recording), ("error", error),
+                     ("game", game), ("ignored", ignored)):
             if v is not None:
                 upd[k] = int(v) if isinstance(v, bool) else v
         sets = ",".join(f"{k}=?" for k in upd)

@@ -56,6 +56,10 @@ class Config:
     gui_port: int = 8080
     caption_template: str = "{streamer} 🔥 #{platform} #clips #fyp"
     youtube_privacy: str = "public"   # public | unlisted | private
+    game_filter: list[str] = field(default_factory=lambda: ["grand theft auto vi", "gta vi", "gta 6", "grand theft auto 6"])
+    match_title: bool = False         # also look for the keywords in the stream title (Twitch/Kick)
+    keep_recordings: bool = False     # delete the raw 10-min segments once clips were cut (saves disk)
+    quality: str = "720p60,720p,best"  # streamlink quality preference: lighter than 'best'
     clip: ClipCfg = field(default_factory=ClipCfg)
 
     @property
@@ -84,6 +88,10 @@ def load_config(path: str | Path) -> Config:
         gui_port=int(raw.get("gui_port", 8080)),
         caption_template=str(raw.get("caption_template", Config.caption_template)),
         youtube_privacy=str(raw.get("youtube_privacy", "public")),
+        game_filter=[str(x) for x in raw.get("game_filter", Config().game_filter) or []],
+        match_title=bool(raw.get("match_title", False)),
+        keep_recordings=bool(raw.get("keep_recordings", False)),
+        quality=str(raw.get("quality", "720p60,720p,best")),
         clip=clip,
     )
     validate(cfg)
