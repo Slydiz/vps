@@ -258,3 +258,19 @@ def test_store_migrates_old_database(tmp_path):
     s.set_streamer_state("twitch:a", "a", "twitch", game="GTA", ignored=True)
     r = s.get_streamer_state("twitch:a")
     assert r["game"] == "GTA" and r["ignored"] == 1
+
+
+def test_quota_exceeded_is_a_publish_error_and_reset_time_is_midnight_pacific(tmp_path):
+    import datetime as dt
+    assert issubclass(publisher.QuotaExceeded, publisher.PublishError)
+    f = tmp_path / "c.mp4"; f.write_bytes(b"x")
+    h = FakeHttp({"oauth2.googleapis.com/token": FakeResp(200, {"access_token": "AT"}),
+                  "upload/youtube": FakeResp(403, {}, text="quotaExceeded")})
+    with pytest.raises(publisher.QuotaExceeded):
+        publisher.YouTubePublisher(h, "i", "s", "r").publish({"path": str(f)}, "c")
+    now = dt.datetime(2026, 11, 18, 10, 0, tzinfo=dt.timezone.utc).timestamp()      # 02:00 Pacific
+    nxt = publisher.next_quota_reset(now)
+    assert 0 < nxt - now <= 24 * 3600 + 1
+    from zoneinfo import ZoneInfo
+    local = dt.datetime.fromtimestamp(nxt, ZoneInfo("America/Los_Angeles"))
+    assert (local.hour, local.minute) == (0, 0) and local.day == 19

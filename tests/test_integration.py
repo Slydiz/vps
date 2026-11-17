@@ -33,6 +33,7 @@ class Spy:
     def stream_live(self, *a): self.events.append(("live", a[0]))
     def stream_ended(self, *a): self.events.append(("ended", a[0]))
     def clip_ready(self, clip): self.events.append(("clip", clip["id"]))
+    def quota_reached(self, dest, when): self.events.append(("quota", dest))
 
 
 def make_pipeline(tmp_path, watchers=None, streamers=(), vertical=False):
@@ -462,3 +463,72 @@ def test_add_youtube_streamer_by_handle_link_or_id(gui):
     ctx.environ.pop("YOUTUBE_API_KEY")
     r = c.post("/streamers/add", data={"name": "NoKey", "platform": "youtube", "channel_id": "@x"}, follow_redirects=True)
     assert b"YOUTUBE_API_KEY" in r.data and len(ctx.cfg.streamers) == 2
+
+
+# ---------------------------------------------------------------- daily limit -> post by hand
+def _quota_routes():
+    return {"oauth2.googleapis.com/token": FakeResp(200, {"access_token": "AT"}),
+            "upload/youtube/v3/videos": FakeResp(403, {}, text='{"error":{"errors":[{"reason":"quotaExceeded"}]}}')}
+
+
+def test_quota_reached_moves_clip_to_post_by_hand_and_alerts_once(gui):
+    c, store, ctx, ids, _ = gui
+    ctx.environ.update(YT_ENV); ctx.session.routes = _quota_routes()
+    c.post(f"/clips/{ids[0]}/decide", data={"action": "approve"})
+    clip = store.get_clip(ids[0])
+    assert clip["status"] == "manual" and "LIMIT" in clip["result"] and "ERROR" not in clip["result"]
+    assert ctx.pipeline.notifier.events.count(("quota", "youtube")) == 1
+    assert ctx.blocked_until["youtube"] > time.time()
+    calls_before = len(ctx.session.calls)
+    c.post(f"/clips/{ids[1]}/decide", data={"action": "approve"})            # second clip while blocked
+    assert store.get_clip(ids[1])["status"] == "manual"
+    assert len(ctx.session.calls) == calls_before                              # YouTube was not even contacted
+    assert ctx.pipeline.notifier.events.count(("quota", "youtube")) == 1      # no second alert
+    assert store.counts()["manual"] == 2
+
+
+def test_post_by_hand_section_download_and_mark_posted(gui):
+    c, store, ctx, ids, _ = gui
+    ctx.environ.update(YT_ENV); ctx.session.routes = _quota_routes()
+    c.post(f"/clips/{ids[0]}/decide", data={"action": "approve"})
+    html = c.get("/review").data.decode()
+    assert "To post by hand" in html and "I posted it" in html and "Download" in html and "Retry all now" in html
+    assert b"1</span>" in c.get("/").data or b"To post by hand" in c.get("/").data        # dashboard counter
+    assert c.get(f"/clips/{ids[0]}/download").status_code == 200
+    c.post(f"/clips/{ids[0]}/posted-by-hand")
+    clip = store.get_clip(ids[0])
+    assert clip["status"] == "posted" and clip["result"].endswith("posted by hand")
+    assert c.post(f"/clips/{ids[0]}/posted-by-hand").status_code == 400          # already done
+
+
+def test_retry_after_the_limit_resets_uploads_without_double_posting(gui):
+    c, store, ctx, ids, _ = gui
+    ctx.environ.update(YT_ENV); ctx.session.routes = _quota_routes()
+    c.post(f"/clips/{ids[0]}/decide", data={"action": "approve"})
+    assert store.get_clip(ids[0])["status"] == "manual"
+    ctx.blocked_until["youtube"] = 0                                             # the quota has reset
+    ctx.session.routes = YT_ROUTES()
+    c.post("/manual/retry-all")
+    clip = store.get_clip(ids[0])
+    assert clip["status"] == "posted" and "youtube: ok https://youtube.com/shorts/V1" in clip["result"]
+
+
+def test_quota_with_another_destination_keeps_the_successful_one(gui):
+    c, store, ctx, ids, _ = gui
+    ctx.environ.update(YT_ENV); ctx.environ["POSTFORME_API_KEY"] = "K"
+    ctx.session.routes = {**_quota_routes(),
+                          "social-accounts": FakeResp(200, {"data": [{"id": "a1"}]}),
+                          "create-upload-url": FakeResp(200, {"upload_url": "https://pfm.example/u", "media_url": "https://cdn/x"}),
+                          "pfm.example": FakeResp(200), "social-posts": FakeResp(201, {})}
+    c.post(f"/clips/{ids[0]}/decide", data={"action": "approve"})
+    clip = store.get_clip(ids[0])
+    assert clip["status"] == "manual" and "post-for-me: ok" in clip["result"] and "youtube: LIMIT" in clip["result"]
+
+
+def test_other_youtube_errors_still_count_as_failures(gui):
+    c, store, ctx, ids, _ = gui
+    ctx.environ.update(YT_ENV)
+    ctx.session.routes = {"oauth2.googleapis.com/token": FakeResp(200, {"access_token": "AT"}),
+                          "upload/youtube/v3/videos": FakeResp(500, {}, text="boom")}
+    c.post(f"/clips/{ids[0]}/decide", data={"action": "approve"})
+    assert store.get_clip(ids[0])["status"] == "failed" and "youtube" not in ctx.blocked_until

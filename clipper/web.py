@@ -16,7 +16,7 @@ from flask import (Flask, Response, abort, jsonify, redirect, render_template_st
 
 from .config import (HIDDEN_SECRETS, PLATFORMS, SECRETS, SUGGESTED, Streamer, remove_env_key, save_config, save_env_values,
                      secret_status, validate)
-from .publisher import GoogleDeviceAuth, PublishError, build_publishers
+from .publisher import GoogleDeviceAuth, PublishError, QuotaExceeded, build_publishers, next_quota_reset
 from .watcher import WatchError, build_watchers, resolve_youtube_channel
 
 CSS = """
@@ -108,6 +108,7 @@ class Ctx:
         self.cfg, self.cfg_path, self.store, self.pipeline = cfg, cfg_path, store, pipeline
         self.session, self.environ, self.env_path = session, environ, env_path
         self.yt_pending = None
+        self.blocked_until: dict[str, float] = {}      # destination -> unix time its daily limit resets
 
     def rebuild(self):
         w, missing = build_watchers(self.session, self.environ)
@@ -136,7 +137,7 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
     def page(active, body_tpl, msg=None, **kw):
         body = render_template_string(body_tpl, fmt_ts=fmt_ts, fmt_dur=fmt_dur, **kw)
         return render_template_string(BASE, css=CSS, tabs=TABS, active=active, body=body, msg=msg,
-                                      pending=store.counts()["pending"])
+                                      pending=store.counts()["pending"] + store.counts()["manual"])
 
     # ------------------------------------------------------------ dashboard
     @app.get("/")
@@ -147,6 +148,7 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
 <h1>Dashboard</h1>
 <div class="grid">
  <div class="card"><div class="mut sm">Waiting for review</div><div class="stat">{{c.pending}}</div><a href="{{url_for('review')}}">Open review →</a></div>
+ {% if c.manual %}<div class="card"><div class="mut sm">To post by hand</div><div class="stat" style="color:var(--warn)">{{c.manual}}</div><a href="{{url_for('review')}}">Open →</a></div>{% endif %}
  <div class="card"><div class="mut sm">Posted</div><div class="stat">{{c.posted}}</div></div>
  <div class="card"><div class="mut sm">Rejected</div><div class="stat">{{c.rejected}}</div></div>
  <div class="card"><div class="mut sm">Failed</div><div class="stat">{{c.failed}}</div></div>
@@ -177,6 +179,22 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
     def review():
         body = """
 <h1>Review</h1>
+{% if manual %}
+<h2 style="color:var(--warn)">⚠️ To post by hand ({{manual|length}}) — daily limit reached</h2>
+<div class="card sm" style="margin-bottom:12px">Download each clip, post it yourself, then tap “I posted it”. Or retry once the limit has reset
+(YouTube: midnight Pacific time = 9:00 in Paris).
+<form method="post" action="{{url_for('manual_retry_all')}}" style="margin-top:10px"><button>↻ Retry all now</button></form></div>
+{% for c in manual %}
+<div class="card" id="clip{{c.id}}" style="margin-bottom:14px"><div class="clip">
+ <video controls preload="metadata" playsinline poster="{{url_for('media',name=c.thumb.split('/')[-1])}}" src="{{url_for('media',name=c.path.split('/')[-1])}}"></video>
+ <div><div class="row"><b>{{c.streamer}}</b><span class="pill warn">post by hand</span></div>
+  <label>Caption</label><textarea id="cap{{c.id}}" rows="3" readonly>{{c.caption}}</textarea>
+  <div class="actions"><a class="btn" href="{{url_for('download',clip_id=c.id)}}">⬇ Download</a>
+  <button type="button" onclick="copyCap({{c.id}},this)">📋 Copy caption</button></div>
+  <div class="actions"><form method="post" action="{{url_for('posted_by_hand',clip_id=c.id)}}" style="display:contents"><button class="ok">✓ I posted it</button></form>
+  <form method="post" action="{{url_for('retry',clip_id=c.id)}}" style="display:contents"><button>↻ Retry</button></form></div>
+ </div></div></div>
+{% endfor %}<h2>To review</h2>{% endif %}
 {% for c in clips %}
 <div class="card" id="clip{{c.id}}" style="margin-bottom:14px"><div class="clip">
  <video controls preload="metadata" playsinline poster="{{url_for('media',name=c.thumb.split('/')[-1])}}" src="{{url_for('media',name=c.path.split('/')[-1])}}"></video>
@@ -190,28 +208,44 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
    <div class="actions"><button class="ok" name="action" value="approve">✓ Approve &amp; publish</button>
    <button class="bad" name="action" value="reject">✕ Reject</button></div></form>
  </div></div></div>
-{% else %}<div class="card empty">Nothing to review. New clips show up here as soon as a moment is detected.</div>{% endfor %}
+{% else %}{% if not manual %}<div class="card empty">Nothing to review. New clips show up here as soon as a moment is detected.</div>{% endif %}{% endfor %}
 <script>function copyCap(id,b){var t=document.getElementById("cap"+id);t.focus();t.select();t.setSelectionRange(0,99999);var ok=false;try{ok=document.execCommand("copy")}catch(e){}b.textContent=ok?"✓ Copied":"Press and hold the text to copy";setTimeout(function(){b.textContent="📋 Copy caption"},2500)}</script>
 """
-        return page("review", body, msg=request.args.get("msg"), clips=store.clips("pending"))
+        return page("review", body, msg=request.args.get("msg"), clips=store.clips("pending"), manual=store.clips("manual"))
 
     def _publish(clip_id: int):
         clip = store.get_clip(clip_id)
         pubs = build_publishers(ctx.session, ctx.environ, cfg.data_path / "exports", cfg.youtube_privacy)
         ok_lines = [ln for ln in (clip["result"] or "").splitlines() if ": ok" in ln]   # kept across retries
         done = {ln.split(":", 1)[0] for ln in ok_lines}
-        errors = []
+        errors, quota = [], []
         for pub in pubs:
             if pub.name in done:
                 continue                                    # never post twice to the same destination
+            until = ctx.blocked_until.get(pub.name, 0)
             try:
+                if time.time() < until:                     # limit already hit today: do not even try
+                    raise QuotaExceeded(f"{pub.name} daily limit reached")
                 ok_lines.append(f"{pub.name}: ok {pub.publish(clip, clip['caption'])}")
+            except QuotaExceeded as e:
+                first = time.time() >= until
+                ctx.blocked_until[pub.name] = next_quota_reset()
+                quota.append(f"{pub.name}: LIMIT {e}")
+                if first:
+                    reset = time.strftime("%H:%M", time.localtime(ctx.blocked_until[pub.name]))
+                    try:
+                        ctx.pipeline.notifier.quota_reached(pub.name, f"{reset} (when the limit resets)")
+                    except Exception:
+                        pass
             except Exception as e:
                 errors.append(f"{pub.name}: ERROR {str(e)[:200]}")
-        result = "\n".join(ok_lines + errors)
+        result = "\n".join(ok_lines + quota + errors)
         if errors:
             store.update_clip(clip_id, status="failed", result=result)
             store.log(f"clip {clip_id} publish failed: {'; '.join(errors)}", "error")
+        elif quota:
+            store.update_clip(clip_id, status="manual", result=result)
+            store.log(f"clip {clip_id} waiting to be posted by hand (daily limit reached)", "warn")
         else:
             store.update_clip(clip_id, status="posted", posted=time.time(), result=result)
             store.log(f"clip {clip_id} published: {', '.join(p.name for p in pubs)}")
@@ -249,11 +283,27 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
     @app.post("/clips/<int:clip_id>/retry")
     def retry(clip_id):
         clip = store.get_clip(clip_id)
-        if not clip or clip["status"] != "failed":
+        if not clip or clip["status"] not in ("failed", "manual"):
             abort(400)
         store.update_clip(clip_id, status="approved")
         _run_publish(clip_id)
-        return redirect(url_for("history"))
+        return redirect(url_for("review" if clip["status"] == "manual" else "history", msg="Retrying…"))
+
+    @app.post("/clips/<int:clip_id>/posted-by-hand")
+    def posted_by_hand(clip_id):
+        clip = store.get_clip(clip_id)
+        if not clip or clip["status"] not in ("manual", "failed"):
+            abort(400)
+        store.update_clip(clip_id, status="posted", posted=time.time(),
+                          result=((clip["result"] or "") + "\nposted by hand").strip())
+        return redirect(url_for("review", msg="Marked as posted"))
+
+    @app.post("/manual/retry-all")
+    def manual_retry_all():
+        for c in store.clips("manual"):
+            store.update_clip(c["id"], status="approved")
+            _run_publish(c["id"])
+        return redirect(url_for("review", msg="Retrying everything…"))
 
     @app.get("/clips/<int:clip_id>/download")
     def download(clip_id):
@@ -350,7 +400,7 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
 <div class="card" style="overflow-x:auto"><table><tr><th></th><th>Streamer</th><th>Status</th><th>When</th><th>Result</th><th></th></tr>
 {% for c in clips %}<tr><td><img class="th" src="{{url_for('media',name=c.thumb.split('/')[-1])}}"></td>
 <td><b>{{c.streamer}}</b><div class="sm mut">{{c.platform}} · score {{'%.1f'|format(c.score)}}</div></td>
-<td><span class="pill {{'ok' if c.status=='posted' else 'warn' if c.status in ('pending','approved') else ''}}">{{c.status}}</span></td>
+<td><span class="pill {{'ok' if c.status=='posted' else 'warn' if c.status in ('pending','approved','manual') else ''}}">{{c.status}}</span></td>
 <td class="sm">{{fmt_ts(c.posted or c.decided or c.created)}}</td><td class="sm mut" style="white-space:pre-line;word-break:break-word">{{c.result}}</td>
 <td><a class="btn" style="padding:8px 12px;display:inline-block" href="{{url_for('download',clip_id=c.id)}}">⬇</a> {% if c.status=='failed' %}<form method="post" action="{{url_for('retry',clip_id=c.id)}}"><button>Retry</button></form>{% endif %}</td></tr>
 {% else %}<tr><td colspan="6" class="empty">No clips yet.</td></tr>{% endfor %}</table></div>

@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, level TEXT, message TEXT);
 """
 
-CLIP_STATUSES = ("pending", "approved", "rejected", "posted", "failed")
+CLIP_STATUSES = ("pending", "approved", "rejected", "posted", "failed", "manual")
 
 
 class Store:

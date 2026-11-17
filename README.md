@@ -103,3 +103,8 @@ After a restart, segments that were recorded but not analysed are processed auto
 Streamers tab → platform **youtube** → paste the channel's **@handle, link or ID**; the app looks up the UC... id itself. It needs `YOUTUBE_API_KEY` in Settings.
 Quota: each check costs 2 units per channel, so one channel polled every 2 minutes uses about 2 900 units a day. The default daily quota is 10 000 and uploads to YouTube (1 600 each) draw from the same project, so follow only a few YouTube channels, or use a separate Google project for the watching key.
 YouTube does not report the game, so the stream title must contain one of your keywords (gta 6, gta vi...).
+
+## When a daily limit is reached (YouTube quota)
+Approving a clip after YouTube's daily quota is used up does not fail: the clip moves to **To post by hand** at the top of the Review tab and Discord warns you once.
+For each one: ⬇ Download + 📋 Copy caption, post it yourself, tap **✓ I posted it**. Or tap **↻ Retry all now** after the reset (midnight Pacific time = 9:00 in Paris).
+Until the reset the app does not contact YouTube again, so no quota is wasted. If another destination (Post for Me) already succeeded, it is never posted twice.

@@ -20,6 +20,24 @@ class PublishError(Exception):
     pass
 
 
+class QuotaExceeded(PublishError):
+    """The platform's daily limit is used up: not a failure, the clip is posted by hand instead."""
+
+
+def next_quota_reset(now: float | None = None) -> float:
+    """YouTube quotas reset at midnight Pacific time. Returns that moment as a unix timestamp."""
+    import datetime as dt
+    now = time.time() if now is None else now
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Los_Angeles")
+    except Exception:                                   # no tz database: PST is close enough
+        tz = dt.timezone(dt.timedelta(hours=-8))
+    local = dt.datetime.fromtimestamp(now, tz)
+    nxt = (local + dt.timedelta(days=1)).replace(hour=0, minute=0, second=1, microsecond=0)
+    return nxt.timestamp()
+
+
 class LocalExportPublisher:
     name = "local-export"
 
@@ -109,8 +127,9 @@ class YouTubePublisher:
                            headers={"Authorization": f"Bearer {tok}", "X-Upload-Content-Type": "video/mp4",
                                     "X-Upload-Content-Length": str(size)}, json=meta, timeout=30)
         if r.status_code != 200:
-            hint = " (daily quota reached, retry tomorrow)" if "quota" in (r.text or "").lower() else ""
-            raise PublishError(f"YouTube upload start: HTTP {r.status_code}{hint}")
+            if "quota" in (r.text or "").lower():
+                raise QuotaExceeded("YouTube daily quota reached (resets at midnight Pacific time, 9:00 in Paris)")
+            raise PublishError(f"YouTube upload start: HTTP {r.status_code}")
         loc = r.headers.get("Location")
         if not loc:
             raise PublishError("YouTube did not return an upload address")

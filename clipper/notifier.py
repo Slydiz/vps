@@ -41,3 +41,8 @@ class DiscordNotifier:
                 f"[Review & approve]({self.review_url})")
         payload = {"embeds": [{"title": f"🎬 New clip from {clip['streamer']}", "description": desc, "color": 0x2ECC71}]}
         return self._post(payload, Path(clip["path"]))
+
+    def quota_reached(self, destination: str, reset_text: str) -> bool:
+        return self._post({"embeds": [{"title": f"⚠️ {destination} daily limit reached",
+                                       "description": f"Approved clips now wait in **To post by hand** (Review tab) until {reset_text}.\n"
+                                                      f"[Open review]({self.review_url})", "color": 0xF5B942}]})
