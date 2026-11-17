@@ -573,3 +573,23 @@ def test_twitch_test_button(gui):
     ctx.session.routes = {"id.twitch.tv": FakeResp(403, {})}
     assert "Twitch refused" in html(c.post("/test/twitch", follow_redirects=True))
     assert "s3cr3t-xyz" not in html(c.get("/settings"))
+
+
+def test_times_are_shown_in_the_configured_timezone(gui):
+    c, store, ctx, ids, _ = gui
+    from clipper import web
+    ts = 1763422800                      # 2025-11-17 23:40:00 UTC = 00:40 on the 18th in Paris
+    assert web.fmt_ts(ts) == "18/11 00:40"                                   # create_app set Europe/Paris
+    ctx.cfg.timezone = "America/New_York"
+    create_app(ctx)
+    assert web.fmt_ts(ts) == "17/11 18:40"
+    ctx.cfg.timezone = "Europe/Paris"
+    create_app(ctx)
+    assert web.fmt_ts(None) == "—"
+
+
+def test_unknown_timezone_is_rejected(tmp_path):
+    from clipper.config import load_config
+    (tmp_path / "c.yaml").write_text("timezone: Mars/Olympus\n")
+    with pytest.raises(ValueError, match="timezone"):
+        load_config(tmp_path / "c.yaml")

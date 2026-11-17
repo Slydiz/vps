@@ -4,6 +4,7 @@ Plain Flask + server-rendered HTML, no JS framework: works on a phone browser.
 """
 from __future__ import annotations
 
+import datetime as dt
 import hmac
 import os
 import re
@@ -70,8 +71,15 @@ BASE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name=
 TABS = [("dashboard", "Dashboard", "🏠"), ("review", "Review", "🎬"), ("streamers", "Streamers", "📡"), ("history", "History", "🕘"), ("settings", "Settings", "⚙️")]
 
 
+_TZ = None
+
+
+def _tz():
+    return _TZ if _TZ is not None else dt.timezone.utc
+
+
 def fmt_ts(ts):
-    return time.strftime("%d/%m %H:%M", time.localtime(ts)) if ts else "—"
+    return dt.datetime.fromtimestamp(ts, _tz()).strftime("%d/%m %H:%M") if ts else "—"
 
 
 def fmt_dur(s):
@@ -119,6 +127,12 @@ class Ctx:
 
 
 def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
+    global _TZ
+    try:
+        from zoneinfo import ZoneInfo
+        _TZ = ZoneInfo(ctx.cfg.timezone)
+    except Exception:
+        _TZ = dt.timezone.utc
     app = Flask(__name__)
     app.config["SYNC_PUBLISH"] = sync_publish
     store, cfg = ctx.store, ctx.cfg
@@ -232,7 +246,7 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
                 ctx.blocked_until[pub.name] = next_quota_reset()
                 quota.append(f"{pub.name}: LIMIT {e}")
                 if first:
-                    reset = time.strftime("%H:%M", time.localtime(ctx.blocked_until[pub.name]))
+                    reset = dt.datetime.fromtimestamp(ctx.blocked_until[pub.name], _tz()).strftime("%H:%M")
                     try:
                         ctx.pipeline.notifier.quota_reached(pub.name, f"{reset} (when the limit resets)")
                     except Exception:
