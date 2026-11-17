@@ -49,7 +49,7 @@ def test_full_user_journey(server):
         if st["posted"] == 1:
             break
         time.sleep(0.5)
-    assert st == {"pending": 0, "approved": 0, "rejected": 1, "posted": 1, "failed": 0}
+    assert st == {"pending": 0, "approved": 0, "rejected": 1, "posted": 1, "failed": 0, "manual": 0}
     # 4. the export folder holds the clip and its caption
     exported = list((data / "exports").glob("*.mp4"))
     assert len(exported) == 1 and exported[0].with_suffix(".txt").read_text() == "e2e caption"
