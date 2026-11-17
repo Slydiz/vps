@@ -58,3 +58,18 @@ sudo DOMAIN=clips.yourdomain.com bash deploy/install.sh   # optional: free HTTPS
 ```
 The script prints the GUI password (stored as `GUI_PASSWORD` in `/opt/clip-pipeline/.env`). Every page asks for it.
 Without a domain the password travels unencrypted over http: use a domain + HTTPS if you can.
+
+## Private access with Tailscale (recommended)
+Tailscale makes a private network between your VPS and your phone: no open port, no password over the internet.
+```
+curl -fsSL https://tailscale.com/install.sh | sh     # on the VPS
+tailscale up                                          # prints a login link: open it, sign in
+tailscale ip -4                                       # e.g. 100.x.y.z
+sudo BIND=$(tailscale ip -4) bash deploy/install.sh   # GUI now listens ONLY on that address
+ufw delete allow 8080/tcp                             # close the public port
+```
+Install the Tailscale app on your phone, sign in with the same account, then open `http://100.x.y.z:8080`.
+
+## Phone app
+On a phone the GUI switches to a bottom tab bar with large buttons. Open it in the browser, then
+*Share → Add to Home Screen* (iPhone) or *menu → Install app* (Android) to get a full-screen "Clips" app.

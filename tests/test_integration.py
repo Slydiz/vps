@@ -242,3 +242,15 @@ def test_password_protects_every_page(gui):
     assert c.get("/", headers=good).status_code == 200
     ctx.environ.pop("GUI_PASSWORD")
     assert c.get("/").status_code == 200                                      # no password set = open (local use)
+
+
+def test_phone_app_manifest_icons_and_nav(gui):
+    c, *_ = gui
+    m = c.get("/manifest.webmanifest").get_json()
+    assert m["display"] == "standalone" and m["start_url"] == "/review" and len(m["icons"]) == 2
+    for size in (180, 192, 512):
+        r = c.get(f"/icon-{size}.png")
+        assert r.status_code == 200 and r.data[:8] == b"\x89PNG\r\n\x1a\n"
+    assert c.get("/icon-999.png").status_code == 404
+    html = c.get("/").data.decode()
+    assert 'name="viewport"' in html and "viewport-fit=cover" in html and 'rel="manifest"' in html and "🎬" in html

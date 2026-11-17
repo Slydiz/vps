@@ -2,6 +2,7 @@
 # Install Clip Pipeline on a Debian/Ubuntu VPS. Run as root from inside the unzipped project folder:
 #     sudo bash deploy/install.sh                    # GUI on http://SERVER_IP:8080  (password protected)
 #     sudo DOMAIN=clips.example.com bash deploy/install.sh   # + free HTTPS via Caddy (domain must point to the VPS)
+#     sudo BIND=$(tailscale ip -4) bash deploy/install.sh    # private: reachable only over Tailscale
 set -euo pipefail
 APP=/opt/clip-pipeline
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
@@ -25,7 +26,7 @@ if ! grep -q '^GUI_PASSWORD=' .env; then
 fi
 chmod 600 .env
 
-HOST=0.0.0.0
+HOST="${BIND:-0.0.0.0}"          # BIND=<tailscale ip> keeps the GUI off the public internet
 [ -n "${DOMAIN:-}" ] && HOST=127.0.0.1     # with Caddy, only Caddy talks to the app
 cat > /etc/systemd/system/clip-pipeline.service <<UNIT
 [Unit]

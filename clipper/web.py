@@ -38,16 +38,33 @@ input,textarea,select{width:100%;background:#0f1115;border:1px solid var(--line)
 label{display:block;margin:10px 0 4px;color:var(--mut);font-size:13px}table{width:100%;border-collapse:collapse}
 td,th{padding:9px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}th{color:var(--mut);font-weight:600;font-size:13px}
 .empty{padding:40px 10px;text-align:center;color:var(--mut)}img.th{width:64px;border-radius:6px;display:block}
+.ic{display:none}
+.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+@media(max-width:700px){
+ nav{position:fixed;top:auto;bottom:0;left:0;right:0;justify-content:space-around;gap:0;padding:6px 4px calc(6px + env(safe-area-inset-bottom));border-top:1px solid var(--line);border-bottom:0;background:#0f1115f5}
+ nav b{display:none}nav a{display:flex;flex-direction:column;align-items:center;gap:1px;padding:6px 8px;font-size:11px;flex:1;border-radius:12px}
+ nav a .ic{display:block;font-size:20px;line-height:1}
+ nav .badge{position:absolute;margin:-4px 0 0 18px;font-size:10px;padding:0 5px}nav a{position:relative}
+ main{padding:14px 12px calc(86px + env(safe-area-inset-bottom))}h1{font-size:20px}
+ button,.btn{min-height:50px;font-size:16px}.actions button{flex:1}
+ input,textarea,select{font-size:16px;min-height:46px}
+ video{max-height:62vh}.card{padding:12px}.grid{grid-template-columns:1fr 1fr}
+ td,th{padding:8px 4px}
+}
 .flash{background:#2ecc7122;color:var(--ok);padding:10px 14px;border-radius:10px;margin-bottom:12px}
 """
 
-BASE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+BASE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Clips">
+<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials"><link rel="apple-touch-icon" href="/icon-180.png">
 <title>Clip Pipeline</title><style>{{css|safe}}</style></head><body>
 <nav><b>🎬 Clip Pipeline</b>
-{% for ep,label in tabs %}<a href="{{url_for(ep)}}" class="{{'on' if active==ep}}">{{label}}{% if ep=='review' and pending %}<span class="badge">{{pending}}</span>{% endif %}</a>{% endfor %}
+{% for ep,label,icon in tabs %}<a href="{{url_for(ep)}}" class="{{'on' if active==ep}}"><span class="ic">{{icon}}</span><span>{{label}}</span>{% if ep=='review' and pending %}<span class="badge">{{pending}}</span>{% endif %}</a>{% endfor %}
 </nav><main>{% if msg %}<div class="flash">{{msg}}</div>{% endif %}{{body|safe}}</main></body></html>"""
 
-TABS = [("dashboard", "Dashboard"), ("review", "Review"), ("streamers", "Streamers"), ("history", "History"), ("settings", "Settings")]
+TABS = [("dashboard", "Dashboard", "🏠"), ("review", "Review", "🎬"), ("streamers", "Streamers", "📡"), ("history", "History", "🕘"), ("settings", "Settings", "⚙️")]
 
 
 def fmt_ts(ts):
@@ -57,6 +74,28 @@ def fmt_ts(ts):
 def fmt_dur(s):
     s = int(s or 0)
     return f"{s // 60}:{s % 60:02d}"
+
+
+def make_icon(size: int) -> bytes:
+    """Dark rounded square with an accent play button, as PNG bytes."""
+    import struct
+    import zlib
+
+    import numpy as np
+    y, x = np.mgrid[0:size, 0:size].astype(np.float32) / size
+    img = np.zeros((size, size, 3), np.uint8)
+    img[:] = (15, 17, 21)
+    r = np.hypot(x - .5, y - .5)
+    img[r < .36] = (108, 140, 255)
+    tri = (x > .42) & (x < .66) & (np.abs(y - .5) < (.66 - x) * .9)
+    img[tri] = (255, 255, 255)
+    raw = b"".join(b"\x00" + img[i].tobytes() for i in range(size))
+
+    def chunk(t, d):
+        c = struct.pack(">I", len(d)) + t + d
+        return c + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
 
 
 class Ctx:
@@ -141,7 +180,7 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
   <div class="sm mut" style="margin:6px 0">{{c.reason}} · peak at {{fmt_dur(c.peak_s)}} · length {{fmt_dur(c.end_s-c.start_s)}}</div>
   <form method="post" action="{{url_for('decide',clip_id=c.id)}}">
    <label>Caption</label><textarea name="caption" rows="3">{{c.caption}}</textarea>
-   <div class="row" style="margin-top:12px"><button class="ok" name="action" value="approve">✓ Approve &amp; publish</button>
+   <div class="actions"><button class="ok" name="action" value="approve">✓ Approve &amp; publish</button>
    <button class="bad" name="action" value="reject">✕ Reject</button></div></form>
  </div></div></div>
 {% else %}<div class="card empty">Nothing to review. New clips show up here as soon as a moment is detected.</div>{% endfor %}
@@ -306,6 +345,20 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
         save_config(cfg, ctx.cfg_path)
         ctx.rebuild()
         return redirect(url_for("settings", msg="Saved"))
+
+    # ------------------------------------------------------------ installable app (PWA)
+    @app.get("/manifest.webmanifest")
+    def manifest():
+        return jsonify(name="Clip Pipeline", short_name="Clips", start_url="/review", display="standalone",
+                       background_color="#0f1115", theme_color="#0f1115",
+                       icons=[{"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
+                              {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}])
+
+    @app.get("/icon-<int:size>.png")
+    def icon(size):
+        if size not in (180, 192, 512):
+            abort(404)
+        return Response(make_icon(size), mimetype="image/png", headers={"Cache-Control": "public, max-age=86400"})
 
     @app.get("/api/state")
     def api_state():
