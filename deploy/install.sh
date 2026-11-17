@@ -41,7 +41,8 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable --now clip-pipeline
+systemctl enable clip-pipeline
+systemctl restart clip-pipeline      # restart, not just start: an update must replace the running code
 
 if [ -n "${DOMAIN:-}" ]; then
   apt-get install -y caddy
