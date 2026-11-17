@@ -18,7 +18,11 @@ SECRETS = {
     "KICK_CLIENT_SECRET": ("Kick", "Client Secret from the Kick developer app"),
     "DISCORD_WEBHOOK_URL": ("Discord", "Webhook URL of the channel that receives alerts"),
     "POSTFORME_API_KEY": ("Post for Me", "API key from your Post for Me dashboard"),
+    "GOOGLE_CLIENT_ID": ("YouTube upload", "OAuth client ID, type 'TVs and Limited Input devices' (Google Cloud)"),
+    "GOOGLE_CLIENT_SECRET": ("YouTube upload", "OAuth client secret of that same client"),
+    "YOUTUBE_REFRESH_TOKEN": ("YouTube upload", "filled automatically by the Connect YouTube button"),
 }
+HIDDEN_SECRETS = {"YOUTUBE_REFRESH_TOKEN"}  # stored like the others, but never shown as an input
 
 
 @dataclass
@@ -51,6 +55,7 @@ class Config:
     data_dir: str = "data"
     gui_port: int = 8080
     caption_template: str = "{streamer} 🔥 #{platform} #clips #fyp"
+    youtube_privacy: str = "public"   # public | unlisted | private
     clip: ClipCfg = field(default_factory=ClipCfg)
 
     @property
@@ -78,6 +83,7 @@ def load_config(path: str | Path) -> Config:
         data_dir=str(raw.get("data_dir", "data")),
         gui_port=int(raw.get("gui_port", 8080)),
         caption_template=str(raw.get("caption_template", Config.caption_template)),
+        youtube_privacy=str(raw.get("youtube_privacy", "public")),
         clip=clip,
     )
     validate(cfg)
@@ -85,6 +91,8 @@ def load_config(path: str | Path) -> Config:
 
 
 def validate(cfg: Config) -> None:
+    if cfg.youtube_privacy not in ("public", "unlisted", "private"):
+        raise ValueError("youtube_privacy must be public, unlisted or private")
     if cfg.poll_seconds < 15:
         raise ValueError("poll_seconds must be >= 15")
     if cfg.segment_seconds < 60:
@@ -139,3 +147,12 @@ def save_env_values(values: dict[str, str], path: str | Path = ".env", environ=o
 
 def secret_status(environ=os.environ) -> dict[str, bool]:
     return {k: bool(environ.get(k)) for k in SECRETS}
+
+
+def remove_env_key(key: str, path: str | Path = ".env", environ=os.environ) -> None:
+    p = Path(path)
+    environ.pop(key, None)
+    if not p.exists():
+        return
+    kept = [ln for ln in p.read_text().splitlines() if not ln.startswith(key + "=")]
+    p.write_text("".join(ln + "\n" for ln in kept))

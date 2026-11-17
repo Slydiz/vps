@@ -73,3 +73,16 @@ Install the Tailscale app on your phone, sign in with the same account, then ope
 ## Phone app
 On a phone the GUI switches to a bottom tab bar with large buttons. Open it in the browser, then
 *Share → Add to Home Screen* (iPhone) or *menu → Install app* (Android) to get a full-screen "Clips" app.
+
+## Free publishing options
+**Download button (works everywhere, no setup).** In *Review*, tap **⬇ Download** to save the clip to your phone and **📋 Copy caption**, then post it yourself in TikTok / Instagram. This is the safe route for platforms whose official posting APIs only allow private posts until an app audit.
+
+**YouTube Shorts, direct upload (free).**
+1. console.cloud.google.com → create a project → *APIs & Services → Library* → enable **YouTube Data API v3**.
+2. *OAuth consent screen*: type **External**, fill the app name and your email, add your own Google account as a **test user**.
+   Then press **Publish app** (otherwise Google expires the login every 7 days). The "unverified app" warning on your own account is normal.
+3. *Credentials → Create credentials → OAuth client ID* → application type **TVs and Limited Input devices**. Copy the Client ID and Client secret.
+4. In the GUI → Settings: paste `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, **Save**, then press **Connect YouTube** and enter the short code on google.com/device.
+5. Approve a clip: it uploads as a Short. Limits: about **6 uploads a day** on the default quota, and Google may keep videos from brand-new unaudited projects private until you request an API audit (pick *private/unlisted* in Settings to see what happens first).
+
+If several destinations are set (Post for Me and YouTube), one Approve sends to all of them. A failed destination is retried alone: the others are never posted twice.

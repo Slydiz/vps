@@ -157,6 +157,76 @@ def test_postforme_errors_are_raised(tmp_path):
         publisher.PostForMePublisher(h, "K").publish({"path": str(f)}, "c")
 
 
-def test_build_publisher_selects_by_key(tmp_path):
-    assert publisher.build_publisher(FakeHttp(), {}, tmp_path).name == "local-export"
-    assert publisher.build_publisher(FakeHttp(), {"POSTFORME_API_KEY": "k"}, tmp_path).name == "post-for-me"
+def test_build_publishers_selects_every_configured_destination(tmp_path):
+    names = lambda env: [p.name for p in publisher.build_publishers(FakeHttp(), env, tmp_path)]
+    yt = {"GOOGLE_CLIENT_ID": "i", "GOOGLE_CLIENT_SECRET": "s", "YOUTUBE_REFRESH_TOKEN": "r"}
+    assert names({}) == ["local-export"]
+    assert names({"POSTFORME_API_KEY": "k"}) == ["post-for-me"]
+    assert names(yt) == ["youtube"]
+    assert names({**yt, "POSTFORME_API_KEY": "k"}) == ["post-for-me", "youtube"]
+    assert names({"GOOGLE_CLIENT_ID": "i", "GOOGLE_CLIENT_SECRET": "s"}) == ["local-export"]   # not connected yet
+
+
+# ---- YouTube
+def test_youtube_title_from_caption():
+    t = publisher.YouTubePublisher.title_from_caption
+    assert t("kai 🔥 #twitch #clips") == "kai 🔥 #twitch #clips #Shorts"
+    assert t("Already #shorts") == "Already #shorts"
+    assert t("") == "Clip #Shorts"
+    assert len(t("x" * 300)) <= 100 and t("x" * 300).endswith("#Shorts")
+    assert "\n" not in t("line1\nline2")
+
+
+def _yt(h, privacy="public"):
+    return publisher.YouTubePublisher(h, "cid", "csec", "refresh", privacy)
+
+
+def test_youtube_upload_flow(tmp_path):
+    f = tmp_path / "c.mp4"; f.write_bytes(b"x" * 1234)
+    h = FakeHttp({"oauth2.googleapis.com/token": FakeResp(200, {"access_token": "AT"}),
+                  "upload/youtube/v3/videos": FakeResp(200, {}, headers={"Location": "https://up.example/s1"}),
+                  "up.example": FakeResp(200, {"id": "VID123"})})
+    out = _yt(h, "unlisted").publish({"path": str(f)}, "My clip #fyp")
+    assert out == "https://youtube.com/shorts/VID123"
+    tok = h.calls[0][2]["data"]
+    assert tok["grant_type"] == "refresh_token" and tok["refresh_token"] == "refresh"
+    init = h.calls[1][2]
+    assert init["headers"]["Authorization"] == "Bearer AT" and init["headers"]["X-Upload-Content-Length"] == "1234"
+    assert init["json"]["status"] == {"privacyStatus": "unlisted", "selfDeclaredMadeForKids": False}
+    assert init["json"]["snippet"]["title"] == "My clip #fyp #Shorts"
+    assert h.calls[2][0] == "PUT" and h.calls[2][1] == "https://up.example/s1"
+
+
+def test_youtube_errors_are_explicit(tmp_path):
+    f = tmp_path / "c.mp4"; f.write_bytes(b"x")
+    with pytest.raises(publisher.PublishError, match="Connect YouTube"):
+        _yt(FakeHttp({"oauth2.googleapis.com/token": FakeResp(400, {"error": "invalid_grant"})})).publish({"path": str(f)}, "c")
+    tok = FakeResp(200, {"access_token": "AT"})
+    with pytest.raises(publisher.PublishError, match="quota"):
+        _yt(FakeHttp({"oauth2.googleapis.com/token": tok, "upload/youtube": FakeResp(403, {}, text="quotaExceeded")})).publish({"path": str(f)}, "c")
+    with pytest.raises(publisher.PublishError, match="address"):
+        _yt(FakeHttp({"oauth2.googleapis.com/token": tok, "upload/youtube": FakeResp(200, {})})).publish({"path": str(f)}, "c")
+    with pytest.raises(publisher.PublishError, match="HTTP 500"):
+        _yt(FakeHttp({"oauth2.googleapis.com/token": tok, "upload/youtube": FakeResp(200, {}, headers={"Location": "https://u/x"}),
+                      "https://u/x": FakeResp(500, {})})).publish({"path": str(f)}, "c")
+
+
+def test_google_device_flow():
+    h = FakeHttp({"device/code": FakeResp(200, {"device_code": "D", "user_code": "ABCD-EFGH", "verification_url": "https://www.google.com/device", "interval": 5, "expires_in": 1800}),
+                  "oauth2.googleapis.com/token": [FakeResp(428, {"error": "authorization_pending"}), FakeResp(200, {"access_token": "a", "refresh_token": "R"}),
+                                                  FakeResp(400, {"error": "access_denied"})]})
+    a = publisher.GoogleDeviceAuth(h, "cid", "sec")
+    p = a.start()
+    assert p["user_code"] == "ABCD-EFGH" and p["url"].endswith("/device") and p["device_code"] == "D"
+    assert a.poll("D") == ("pending", None)
+    assert a.poll("D") == ("ok", "R")
+    assert a.poll("D")[0] == "error"
+    with pytest.raises(publisher.PublishError):
+        publisher.GoogleDeviceAuth(FakeHttp({"device/code": FakeResp(401, {})}), "bad", "x").start()
+
+
+def test_remove_env_key(tmp_path):
+    env = {"A": "1", "B": "2"}
+    (tmp_path / ".env").write_text("A=1\nB=2\n")
+    config.remove_env_key("A", tmp_path / ".env", env)
+    assert env == {"B": "2"} and (tmp_path / ".env").read_text() == "B=2\n"

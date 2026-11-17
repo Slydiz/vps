@@ -254,3 +254,72 @@ def test_phone_app_manifest_icons_and_nav(gui):
     assert c.get("/icon-999.png").status_code == 404
     html = c.get("/").data.decode()
     assert 'name="viewport"' in html and "viewport-fit=cover" in html and 'rel="manifest"' in html and "🎬" in html
+
+
+# ---------------------------------------------------------------- download + YouTube
+def test_download_button_and_copy_caption(gui):
+    c, store, ctx, ids, _ = gui
+    html = c.get("/review").data.decode()
+    assert html.count("Download") == 2 and "copyCap(" in html
+    r = c.get(f"/clips/{ids[0]}/download")
+    assert r.status_code == 200 and "attachment" in r.headers["Content-Disposition"] and ".mp4" in r.headers["Content-Disposition"]
+    assert r.data[4:8] == b"ftyp" and c.get("/clips/999/download").status_code == 404
+
+
+YT_ENV = {"GOOGLE_CLIENT_ID": "cid", "GOOGLE_CLIENT_SECRET": "sec", "YOUTUBE_REFRESH_TOKEN": "rt"}
+YT_ROUTES = lambda: {"oauth2.googleapis.com/token": FakeResp(200, {"access_token": "AT"}),
+                     "upload/youtube/v3/videos": FakeResp(200, {}, headers={"Location": "https://up.example/s"}),
+                     "up.example": FakeResp(200, {"id": "V1"})}
+
+
+def test_approve_uploads_to_youtube(gui):
+    c, store, ctx, ids, _ = gui
+    ctx.environ.update(YT_ENV); ctx.session.routes = YT_ROUTES()
+    c.post(f"/clips/{ids[0]}/decide", data={"action": "approve", "caption": "wow #fyp"})
+    clip = store.get_clip(ids[0])
+    assert clip["status"] == "posted" and "youtube: ok https://youtube.com/shorts/V1" in clip["result"]
+    assert "local-export" not in clip["result"]                           # a real destination replaces the local folder
+    assert sum(1 for m, u, k in ctx.session.calls if m == "PUT") == 1
+
+
+def test_partial_failure_is_retried_without_double_posting(gui):
+    c, store, ctx, ids, _ = gui
+    ctx.environ.update(YT_ENV); ctx.environ["POSTFORME_API_KEY"] = "K"
+    ctx.session.routes = {**YT_ROUTES(), "social-accounts": FakeResp(500, {})}          # Post for Me is down, YouTube works
+    c.post(f"/clips/{ids[0]}/decide", data={"action": "approve"})
+    clip = store.get_clip(ids[0])
+    assert clip["status"] == "failed" and "youtube: ok" in clip["result"] and "post-for-me: ERROR" in clip["result"]
+    ctx.session.routes = {**YT_ROUTES(),
+                          "social-accounts": FakeResp(200, {"data": [{"id": "a1"}]}),
+                          "create-upload-url": FakeResp(200, {"upload_url": "https://pfm.example/u", "media_url": "https://cdn/x"}),
+                          "pfm.example": FakeResp(200), "social-posts": FakeResp(201, {})}
+    c.post(f"/clips/{ids[0]}/retry")
+    clip = store.get_clip(ids[0])
+    assert clip["status"] == "posted" and "post-for-me: ok" in clip["result"]
+    youtube_uploads = [u for m, u, k in ctx.session.calls if m == "PUT" and "up.example" in u]
+    assert len(youtube_uploads) == 1                                      # YouTube was NOT uploaded a second time
+
+
+def test_connect_youtube_from_settings(gui):
+    c, store, ctx, ids, tmp = gui
+    ctx.environ.update({"GOOGLE_CLIENT_ID": "cid", "GOOGLE_CLIENT_SECRET": "sec"})
+    assert b"Connect YouTube" in c.get("/settings").data
+    ctx.session.routes = {"device/code": FakeResp(200, {"device_code": "D", "user_code": "ABCD-1234", "verification_url": "https://www.google.com/device", "interval": 5, "expires_in": 900}),
+                          "oauth2.googleapis.com/token": [FakeResp(428, {"error": "authorization_pending"}), FakeResp(200, {"access_token": "a", "refresh_token": "RT-NEW"})]}
+    page = c.post("/youtube/connect").data.decode()
+    assert "ABCD-1234" in page and "google.com/device" in page
+    assert c.get("/youtube/poll").get_json()["status"] == "pending"
+    assert "YOUTUBE_REFRESH_TOKEN" not in ctx.environ
+    assert c.get("/youtube/poll").get_json()["status"] == "ok"
+    assert ctx.environ["YOUTUBE_REFRESH_TOKEN"] == "RT-NEW" and "YOUTUBE_REFRESH_TOKEN=RT-NEW" in (tmp / ".env").read_text()
+    html = c.get("/settings").data.decode()
+    assert "Disconnect YouTube" in html and "RT-NEW" not in html and 'name="YOUTUBE_REFRESH_TOKEN"' not in html
+    c.post("/youtube/disconnect")
+    assert "YOUTUBE_REFRESH_TOKEN" not in ctx.environ and "RT-NEW" not in (tmp / ".env").read_text()
+
+
+def test_connect_youtube_without_client_keys_explains(gui):
+    c, *_ = gui
+    r = c.post("/youtube/connect", follow_redirects=True)
+    assert b"GOOGLE_CLIENT_ID" in r.data
+    assert c.get("/youtube/poll").get_json()["status"] == "error"

@@ -6,14 +6,17 @@ from __future__ import annotations
 
 import hmac
 import os
+import re
 import threading
 import time
 from pathlib import Path
 
-from flask import Flask, Response, abort, jsonify, redirect, render_template_string, request, send_from_directory, url_for
+from flask import (Flask, Response, abort, jsonify, redirect, render_template_string, request, send_file,
+                   send_from_directory, url_for)
 
-from .config import PLATFORMS, SECRETS, Streamer, save_config, save_env_values, secret_status, validate
-from .publisher import build_publisher
+from .config import (HIDDEN_SECRETS, PLATFORMS, SECRETS, Streamer, remove_env_key, save_config, save_env_values,
+                     secret_status, validate)
+from .publisher import GoogleDeviceAuth, PublishError, build_publishers
 from .watcher import build_watchers
 
 CSS = """
@@ -104,6 +107,7 @@ class Ctx:
     def __init__(self, cfg, cfg_path, store, pipeline, session, environ=os.environ, env_path=".env"):
         self.cfg, self.cfg_path, self.store, self.pipeline = cfg, cfg_path, store, pipeline
         self.session, self.environ, self.env_path = session, environ, env_path
+        self.yt_pending = None
 
     def rebuild(self):
         w, missing = build_watchers(self.session, self.environ)
@@ -179,24 +183,37 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
   <div class="row"><b>{{c.streamer}}</b><span class="pill">{{c.platform}}</span><span class="pill ok">score {{'%.1f'|format(c.score)}}</span><span class="sp"></span><span class="mut sm">{{fmt_ts(c.created)}}</span></div>
   <div class="sm mut" style="margin:6px 0">{{c.reason}} · peak at {{fmt_dur(c.peak_s)}} · length {{fmt_dur(c.end_s-c.start_s)}}</div>
   <form method="post" action="{{url_for('decide',clip_id=c.id)}}">
-   <label>Caption</label><textarea name="caption" rows="3">{{c.caption}}</textarea>
+   <label>Caption</label><textarea name="caption" id="cap{{c.id}}" rows="3">{{c.caption}}</textarea>
+   <div class="actions"><a class="btn" href="{{url_for('download',clip_id=c.id)}}">⬇ Download</a>
+   <button type="button" onclick="copyCap({{c.id}},this)">📋 Copy caption</button></div>
    <div class="actions"><button class="ok" name="action" value="approve">✓ Approve &amp; publish</button>
    <button class="bad" name="action" value="reject">✕ Reject</button></div></form>
  </div></div></div>
 {% else %}<div class="card empty">Nothing to review. New clips show up here as soon as a moment is detected.</div>{% endfor %}
+<script>function copyCap(id,b){var t=document.getElementById("cap"+id);t.focus();t.select();t.setSelectionRange(0,99999);var ok=false;try{ok=document.execCommand("copy")}catch(e){}b.textContent=ok?"✓ Copied":"Press and hold the text to copy";setTimeout(function(){b.textContent="📋 Copy caption"},2500)}</script>
 """
         return page("review", body, msg=request.args.get("msg"), clips=store.clips("pending"))
 
     def _publish(clip_id: int):
         clip = store.get_clip(clip_id)
-        pub = build_publisher(ctx.session, ctx.environ, cfg.data_path / "exports")
-        try:
-            res = pub.publish(clip, clip["caption"])
-            store.update_clip(clip_id, status="posted", posted=time.time(), result=f"{pub.name}: {res}")
-            store.log(f"clip {clip_id} published via {pub.name}")
-        except Exception as e:
-            store.update_clip(clip_id, status="failed", result=str(e)[:300])
-            store.log(f"clip {clip_id} publish failed: {e}", "error")
+        pubs = build_publishers(ctx.session, ctx.environ, cfg.data_path / "exports", cfg.youtube_privacy)
+        ok_lines = [ln for ln in (clip["result"] or "").splitlines() if ": ok" in ln]   # kept across retries
+        done = {ln.split(":", 1)[0] for ln in ok_lines}
+        errors = []
+        for pub in pubs:
+            if pub.name in done:
+                continue                                    # never post twice to the same destination
+            try:
+                ok_lines.append(f"{pub.name}: ok {pub.publish(clip, clip['caption'])}")
+            except Exception as e:
+                errors.append(f"{pub.name}: ERROR {str(e)[:200]}")
+        result = "\n".join(ok_lines + errors)
+        if errors:
+            store.update_clip(clip_id, status="failed", result=result)
+            store.log(f"clip {clip_id} publish failed: {'; '.join(errors)}", "error")
+        else:
+            store.update_clip(clip_id, status="posted", posted=time.time(), result=result)
+            store.log(f"clip {clip_id} published: {', '.join(p.name for p in pubs)}")
 
     def _run_publish(clip_id):
         if app.config["SYNC_PUBLISH"]:
@@ -236,6 +253,14 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
         store.update_clip(clip_id, status="approved")
         _run_publish(clip_id)
         return redirect(url_for("history"))
+
+    @app.get("/clips/<int:clip_id>/download")
+    def download(clip_id):
+        clip = store.get_clip(clip_id)
+        if not clip or not Path(clip["path"]).exists():
+            abort(404)
+        name = re.sub(r"[^A-Za-z0-9_-]+", "-", f"{clip['streamer']}-clip-{clip_id}") + ".mp4"
+        return send_file(clip["path"], as_attachment=True, download_name=name, mimetype="video/mp4")
 
     @app.get("/media/<path:name>")
     def media(name):
@@ -295,8 +320,8 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
 {% for c in clips %}<tr><td><img class="th" src="{{url_for('media',name=c.thumb.split('/')[-1])}}"></td>
 <td><b>{{c.streamer}}</b><div class="sm mut">{{c.platform}} · score {{'%.1f'|format(c.score)}}</div></td>
 <td><span class="pill {{'ok' if c.status=='posted' else 'warn' if c.status in ('pending','approved') else ''}}">{{c.status}}</span></td>
-<td class="sm">{{fmt_ts(c.posted or c.decided or c.created)}}</td><td class="sm mut">{{c.result}}</td>
-<td>{% if c.status=='failed' %}<form method="post" action="{{url_for('retry',clip_id=c.id)}}"><button>Retry</button></form>{% endif %}</td></tr>
+<td class="sm">{{fmt_ts(c.posted or c.decided or c.created)}}</td><td class="sm mut" style="white-space:pre-line;word-break:break-word">{{c.result}}</td>
+<td><a class="btn" style="padding:8px 12px;display:inline-block" href="{{url_for('download',clip_id=c.id)}}">⬇</a> {% if c.status=='failed' %}<form method="post" action="{{url_for('retry',clip_id=c.id)}}"><button>Retry</button></form>{% endif %}</td></tr>
 {% else %}<tr><td colspan="6" class="empty">No clips yet.</td></tr>{% endfor %}</table></div>
 """
         return page("history", body, clips=store.clips())
@@ -309,7 +334,7 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
 <form method="post" action="{{url_for('settings_save')}}">
 <h2>Credentials <span class="sm">(saved to a local .env file, never shown again)</span></h2>
 <div class="card">
-{% for k,(who,desc) in secrets.items() %}
+{% for k,(who,desc) in secrets.items() if k not in hidden %}
 <label>{{who}} — {{k}} {% if status[k] %}<span class="pill ok">set</span>{% else %}<span class="pill warn">missing</span>{% endif %}</label>
 <input type="password" name="{{k}}" autocomplete="off" placeholder="{{'•••••••• (leave empty to keep)' if status[k] else desc}}">
 {% endfor %}</div>
@@ -321,16 +346,26 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
 <label>Max clips per 10-minute segment</label><input type="number" name="max_clips" min="1" max="10" value="{{cfg.clip.max_clips_per_segment}}">
 <label>Vertical 9:16 for TikTok / Shorts / Reels</label><select name="vertical"><option value="1" {{'selected' if cfg.clip.vertical}}>Yes</option><option value="0" {{'selected' if not cfg.clip.vertical}}>No (keep original)</option></select>
 <label>Caption template ({streamer} and {platform} are replaced)</label><input name="caption" value="{{cfg.caption_template}}">
+<label>YouTube Shorts visibility</label><select name="youtube_privacy">{% for v in ("public","unlisted","private") %}<option {{'selected' if cfg.youtube_privacy==v}}>{{v}}</option>{% endfor %}</select>
 </div><div style="margin-top:14px"><button class="acc">Save</button></div></form>
-<h2>Publishing</h2><div class="card sm">Currently: <b>{{'Post for Me (all linked accounts)' if status['POSTFORME_API_KEY'] else 'Local export (data/exports) — add a Post for Me key to publish for real'}}</b></div>
+<h2>YouTube Shorts (free)</h2>
+<div class="card sm">
+{% if status['YOUTUBE_REFRESH_TOKEN'] %}<span class="pill ok">connected</span> Approved clips are uploaded to your YouTube channel.
+<form method="post" action="{{url_for('youtube_disconnect')}}" style="margin-top:10px"><button class="bad">Disconnect YouTube</button></form>
+{% elif status['GOOGLE_CLIENT_ID'] and status['GOOGLE_CLIENT_SECRET'] %}<span class="pill warn">not connected</span> Press the button, then enter the short code on google.com/device.
+<form method="post" action="{{url_for('youtube_connect')}}" style="margin-top:10px"><button class="acc">Connect YouTube</button></form>
+{% else %}<span class="pill warn">needs setup</span> Paste GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET above, press Save, then come back here.{% endif %}
+</div>
+<h2>Publishing</h2><div class="card sm">Approved clips go to:
+<b>{% set d=[] %}{% if status['POSTFORME_API_KEY'] %}{% set _=d.append('Post for Me') %}{% endif %}{% if status['YOUTUBE_REFRESH_TOKEN'] %}{% set _=d.append('YouTube Shorts') %}{% endif %}{{ d|join(' + ') if d else 'a local folder only (data/exports): use the Download button to post by hand' }}</b></div>
 """
-        return page("settings", body, msg=request.args.get("msg"), secrets=SECRETS, status=secret_status(ctx.environ), cfg=cfg)
+        return page("settings", body, msg=request.args.get("msg"), secrets=SECRETS, hidden=HIDDEN_SECRETS, status=secret_status(ctx.environ), cfg=cfg)
 
     @app.post("/settings")
     def settings_save():
-        save_env_values({k: request.form.get(k, "") for k in SECRETS}, ctx.env_path, ctx.environ)
+        save_env_values({k: request.form.get(k, "") for k in SECRETS if k not in HIDDEN_SECRETS}, ctx.env_path, ctx.environ)
         c = cfg.clip
-        backup = (c.pre_seconds, c.post_seconds, c.min_score, c.max_clips_per_segment, c.vertical, cfg.caption_template)
+        backup = (c.pre_seconds, c.post_seconds, c.min_score, c.max_clips_per_segment, c.vertical, cfg.caption_template, cfg.youtube_privacy)
         try:
             c.pre_seconds = int(request.form.get("pre_seconds", c.pre_seconds))
             c.post_seconds = int(request.form.get("post_seconds", c.post_seconds))
@@ -338,13 +373,64 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
             c.max_clips_per_segment = int(request.form.get("max_clips", c.max_clips_per_segment))
             c.vertical = request.form.get("vertical", "1") == "1"
             cfg.caption_template = request.form.get("caption", cfg.caption_template) or cfg.caption_template
+            cfg.youtube_privacy = request.form.get("youtube_privacy", cfg.youtube_privacy)
             validate(cfg)
         except ValueError as e:
-            (c.pre_seconds, c.post_seconds, c.min_score, c.max_clips_per_segment, c.vertical, cfg.caption_template) = backup
+            (c.pre_seconds, c.post_seconds, c.min_score, c.max_clips_per_segment, c.vertical, cfg.caption_template, cfg.youtube_privacy) = backup
             return redirect(url_for("settings", msg=f"Not saved: {e}"))
         save_config(cfg, ctx.cfg_path)
         ctx.rebuild()
         return redirect(url_for("settings", msg="Saved"))
+
+    # ------------------------------------------------------------ YouTube connection (device flow)
+    @app.post("/youtube/connect")
+    def youtube_connect():
+        cid, sec = ctx.environ.get("GOOGLE_CLIENT_ID"), ctx.environ.get("GOOGLE_CLIENT_SECRET")
+        if not (cid and sec):
+            return redirect(url_for("settings", msg="Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET first"))
+        try:
+            ctx.yt_pending = GoogleDeviceAuth(ctx.session, cid, sec).start()
+        except Exception as e:
+            return redirect(url_for("settings", msg=f"YouTube: {e}"))
+        body = """
+<h1>Connect YouTube</h1>
+<div class="card">
+ <p>1. Open <a href="{{p.url}}" target="_blank" rel="noopener"><b>{{p.url}}</b></a> (on this phone is fine)</p>
+ <p>2. Enter this code and accept:</p>
+ <div class="stat" style="letter-spacing:3px;margin:8px 0 14px">{{p.user_code}}</div>
+ <p class="mut sm" id="st">Waiting for you to accept on Google…</p>
+</div>
+<script>
+var iv={{p.interval}}*1000;
+function poll(){fetch("{{url_for('youtube_poll')}}",{credentials:"same-origin"}).then(r=>r.json()).then(j=>{
+ if(j.status=="ok"){document.getElementById("st").textContent="✓ Connected";location="{{url_for('settings',msg='YouTube connected')}}"}
+ else if(j.status=="error"){document.getElementById("st").textContent="✕ "+j.message}
+ else{setTimeout(poll,iv)}}).catch(()=>setTimeout(poll,iv))}
+setTimeout(poll,iv);
+</script>"""
+        return page("settings", body, p=ctx.yt_pending)
+
+    @app.get("/youtube/poll")
+    def youtube_poll():
+        p = getattr(ctx, "yt_pending", None)
+        if not p or time.time() > p["expires"]:
+            return jsonify(status="error", message="The code expired, start again")
+        cid, sec = ctx.environ.get("GOOGLE_CLIENT_ID"), ctx.environ.get("GOOGLE_CLIENT_SECRET")
+        try:
+            status, val = GoogleDeviceAuth(ctx.session, cid, sec).poll(p["device_code"])
+        except Exception as e:
+            return jsonify(status="error", message=str(e))
+        if status == "ok":
+            save_env_values({"YOUTUBE_REFRESH_TOKEN": val}, ctx.env_path, ctx.environ)
+            ctx.yt_pending = None
+            store.log("YouTube connected")
+            return jsonify(status="ok")
+        return jsonify(status=status, message=val)
+
+    @app.post("/youtube/disconnect")
+    def youtube_disconnect():
+        remove_env_key("YOUTUBE_REFRESH_TOKEN", ctx.env_path, ctx.environ)
+        return redirect(url_for("settings", msg="YouTube disconnected"))
 
     # ------------------------------------------------------------ installable app (PWA)
     @app.get("/manifest.webmanifest")

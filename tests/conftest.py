@@ -4,8 +4,8 @@ import pytest
 
 
 class FakeResp:
-    def __init__(self, status=200, data=None, text=""):
-        self.status_code, self._d, self.text = status, data, text
+    def __init__(self, status=200, data=None, text="", headers=None):
+        self.status_code, self._d, self.text, self.headers = status, data, text, headers or {}
 
     def json(self):
         return self._d
