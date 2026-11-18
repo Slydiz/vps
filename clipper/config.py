@@ -67,7 +67,7 @@ class Config:
     segment_seconds: int = 600  # video: 10-minute chunks
     data_dir: str = "data"
     gui_port: int = 8080
-    caption_template: str = "{streamer} 🔥 #{platform} #clips #fyp"
+    caption_template: str = "{streamer} 🔥 #gta6 #grandtheftauto #{platform} #clips #fyp"
     youtube_privacy: str = "public"   # public | unlisted | private
     timezone: str = "Europe/Paris"    # how times are displayed (the server itself runs in UTC)
     game_filter: list[str] = field(default_factory=lambda: ["grand theft auto vi", "gta vi", "gta 6", "grand theft auto 6"])

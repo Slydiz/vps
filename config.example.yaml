@@ -6,7 +6,7 @@ streamers:
 poll_seconds: 120        # how often to ask the APIs "who is live"
 segment_seconds: 600     # recording chunk length (10 min)
 gui_port: 8080
-caption_template: "{streamer} 🔥 #{platform} #clips #fyp"
+caption_template: "{streamer} 🔥 #gta6 #grandtheftauto #{platform} #clips #fyp"
 clip:
   pre_seconds: 40        # kept before the peak (the video says 35-45)
   post_seconds: 20
