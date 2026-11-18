@@ -658,3 +658,47 @@ def test_max_clips_kept_setting_is_saved(gui):
     c.post("/settings", data={"max_clips_kept": "42"})
     assert ctx.cfg.max_clips_kept == 42
     assert b"Max clips kept" in c.get("/settings").data
+
+
+def _live_pipeline(tmp_path, names, **cfg_over):
+    FakeRecorder.started, FakeRecorder.stopped = [], []
+    streamers = [Streamer(n, "twitch") for n in names]
+    cfg, store, spy, _ = make_pipeline(tmp_path, streamers=streamers)
+    for k, v in cfg_over.items():
+        setattr(cfg, k, v)
+    w = FakeWatcher([LiveInfo(True, "Hi", "u")] * 50)
+    return cfg, store, spy, Pipeline(cfg, store, {"twitch": w}, spy, recorder_factory=FakeRecorder, chat_factory=FakeChat)
+
+
+def test_max_simultaneous_recordings_first_in_list_win(tmp_path):
+    cfg, store, spy, p = _live_pipeline(tmp_path, ["a", "b", "c", "d"], max_recordings=2, min_free_gb=0)
+    p.poll()
+    assert FakeRecorder.started == ["twitch:a", "twitch:b"]
+    p.poll()
+    assert FakeRecorder.started == ["twitch:a", "twitch:b"]          # c and d keep waiting, no duplicates
+    p.cfg.max_recordings = 3
+    p.poll()
+    assert FakeRecorder.started == ["twitch:a", "twitch:b", "twitch:c"]   # a slot opened by the setting: picked up
+
+
+def test_low_disk_stops_recordings_alerts_once_and_resumes(tmp_path):
+    cfg, store, spy, p = _live_pipeline(tmp_path, ["a", "b"], max_recordings=0, min_free_gb=10)
+    alerts = []
+    spy.disk_low = lambda free, limit: alerts.append(free)
+    p.free_gb = lambda: 50.0
+    p.poll()
+    assert FakeRecorder.started == ["twitch:a", "twitch:b"]
+    p.free_gb = lambda: 3.0
+    p.poll(); p.poll()
+    assert sorted(FakeRecorder.stopped) == ["twitch:a", "twitch:b"] and len(alerts) == 1
+    assert len(p.recorders) == 0
+    p.free_gb = lambda: 50.0
+    p.poll()
+    assert len(p.recorders) == 2
+
+
+def test_recording_limits_are_saved_in_settings(gui):
+    c, store, ctx, *_ = gui
+    c.post("/settings", data={"max_recordings": "6", "min_free_gb": "15"})
+    assert ctx.cfg.max_recordings == 6 and ctx.cfg.min_free_gb == 15
+    assert b"Streams recorded at the same time" in c.get("/settings").data

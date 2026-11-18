@@ -47,6 +47,11 @@ class DiscordNotifier:
                                        "description": f"Approved clips now wait in **To post by hand** (Review tab) until {reset_text}.\n"
                                                       f"[Open review]({self.review_url})", "color": 0xF5B942}]})
 
+    def disk_low(self, free_gb: float, limit_gb: float) -> bool:
+        return self._post({"embeds": [{"title": "⚠️ Disk almost full: recordings paused",
+                                       "description": f"{free_gb:.1f} GB free (limit {limit_gb:.0f} GB). Free some space; recording resumes by itself.",
+                                       "color": 0xE5484D}]})
+
     def test(self) -> tuple[bool, str]:
         """Send a visible test message and explain the result in plain words."""
         if not self.enabled:

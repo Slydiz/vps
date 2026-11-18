@@ -72,6 +72,8 @@ class Config:
     timezone: str = "Europe/Paris"    # how times are displayed (the server itself runs in UTC)
     game_filter: list[str] = field(default_factory=lambda: ["grand theft auto vi", "gta vi", "gta 6", "grand theft auto 6"])
     match_title: bool = False         # also look for the keywords in the stream title (Twitch/Kick)
+    max_recordings: int = 4           # streams recorded at the same time (the first ones in your list win); 0 = no limit
+    min_free_gb: float = 10.0         # below this free disk space, recordings stop and new ones are refused; 0 = off
     max_clips_kept: int = 100         # clip files kept on disk; the oldest posted/rejected ones are deleted beyond this (0 = no limit)
     keep_recordings: bool = False     # delete the raw 10-min segments once clips were cut (saves disk)
     quality: str = "720p60,720p,best"  # streamlink quality preference: lighter than 'best'
@@ -106,6 +108,8 @@ def load_config(path: str | Path) -> Config:
         timezone=str(raw.get("timezone", "Europe/Paris")),
         game_filter=[str(x) for x in raw.get("game_filter", Config().game_filter) or []],
         match_title=bool(raw.get("match_title", False)),
+        max_recordings=int(raw.get("max_recordings", 4)),
+        min_free_gb=float(raw.get("min_free_gb", 10.0)),
         max_clips_kept=int(raw.get("max_clips_kept", 100)),
         keep_recordings=bool(raw.get("keep_recordings", False)),
         quality=str(raw.get("quality", "720p60,720p,best")),
@@ -123,6 +127,8 @@ def validate(cfg: Config) -> None:
         ZoneInfo(cfg.timezone)
     except Exception:
         raise ValueError(f"unknown timezone {cfg.timezone!r} (example: Europe/Paris)")
+    if cfg.max_recordings < 0 or cfg.min_free_gb < 0:
+        raise ValueError("max_recordings and min_free_gb must be 0 (off) or more")
     if cfg.max_clips_kept < 0:
         raise ValueError("max_clips_kept must be 0 (no limit) or more")
     if cfg.poll_seconds < 15:

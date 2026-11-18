@@ -1,6 +1,7 @@
 """Wires steps 1-5 together: poll -> record -> detect -> clip -> notify. Review/publish live in web.py."""
 from __future__ import annotations
 
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -28,6 +29,7 @@ class Pipeline:
 
     # ------------------------------------------------------------ step 1 + 2
     def poll(self) -> None:
+        self._disk_guard()          # stops running recorders too when the disk is almost full
         for s in self.cfg.streamers:
             key = s.key()
             w = self.watchers.get(s.platform)
@@ -95,7 +97,43 @@ class Pipeline:
             self._warned_prune = False
         return removed
 
+    def free_gb(self) -> float:
+        try:
+            return shutil.disk_usage(self.rec_dir if self.rec_dir.exists() else self.cfg.data_path).free / 1e9
+        except OSError:
+            return float("inf")
+
+    def _disk_guard(self) -> bool:
+        """True when recording is allowed. Below min_free_gb: stop every recorder, alert once, refuse new ones."""
+        limit = self.cfg.min_free_gb
+        if limit <= 0:
+            return True
+        free = self.free_gb()
+        if free >= limit:
+            if getattr(self, "_disk_alerted", False):
+                self.store.log(f"disk space back to {free:.1f} GB, recording can resume")
+            self._disk_alerted = False
+            return True
+        if not getattr(self, "_disk_alerted", False):
+            self._disk_alerted = True
+            self.store.log(f"disk almost full ({free:.1f} GB free, limit {limit:.0f} GB): recordings stopped", "warn")
+            fn = getattr(self.notifier, "disk_low", None)
+            if fn:
+                fn(free, limit)
+        for key in list(self.recorders):
+            self._stop_recording(key)
+        return False
+
     def _safe_start(self, s: Streamer, url: str):
+        if not self._disk_guard():
+            return
+        cap = self.cfg.max_recordings
+        if cap and len(self.recorders) >= cap:
+            if s.key() not in getattr(self, "_cap_logged", set()):
+                self._cap_logged = getattr(self, "_cap_logged", set()) | {s.key()}
+                self.store.log(f"{s.key()}: not recorded for now, {cap} streams already recording (limit in Settings)")
+            return
+        getattr(self, "_cap_logged", set()).discard(s.key())
         try:
             self._start_recording(s, url)
         except Exception as e:
