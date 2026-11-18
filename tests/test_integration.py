@@ -613,3 +613,5 @@ def test_add_more_suggested_streamers(gui):
     r = c.post("/streamers/add-suggested", data={"group": "more"}, follow_redirects=True)
     assert r.status_code == 200 and "twitch:montanablack88" in {s.key() for s in ctx.cfg.streamers}
     assert b"Add more" in c.get("/streamers").data
+    c.post("/streamers/add-suggested", data={"group": "us2"})
+    assert "twitch:asmongold" in {s.key() for s in ctx.cfg.streamers}

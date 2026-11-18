@@ -32,6 +32,9 @@ SUGGESTED = {
     # more: seen live on GTA VI or in a GTA VI streamer ranking on streamertimes.tv (18/11/2026), plus a few big names
     "more": ["montanablack88", "mokrivskyi", "djmariio", "rubius", "elmariana", "jynxzi", "sypherpk", "nickmercs",
              "xqc", "ludwig", "ponce", "mistermv", "joyca", "ninja"],
+    # more US: big English-speaking Twitch names (suggestions, not checked to be playing GTA VI)
+    "us2": ["adin", "stableronaldo", "castro_1021", "plaqueboymax", "caseoh_", "asmongold", "hasanabi", "esfandtv",
+            "tfue", "cloakzy", "nadeshot", "disguisedtoast", "valkyrae", "pokimane", "jasontheween", "tarik"],
 }
 
 

@@ -346,7 +346,8 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
 <button class="acc" name="group" value="fr">🇫🇷 Add French ({{n_fr}})</button>
 <button class="acc" name="group" value="us">🇺🇸 Add American ({{n_us}})</button>
 <button name="group" value="all">Add both</button>
-<button class="acc" name="group" value="more">🌍 Add more ({{n_more}})</button></form></div>
+<button class="acc" name="group" value="more">🌍 Add more ({{n_more}})</button>
+<button class="acc" name="group" value="us2">🇺🇸 Add more American ({{n_us2}})</button></form></div>
 <h2>Add a streamer</h2>
 <form class="card" method="post" action="{{url_for('streamer_add')}}">
 <label>Channel name (as in the URL)</label><input name="name" required placeholder="kaicenat">
@@ -355,7 +356,7 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
 <div style="margin-top:14px"><button class="acc">Add</button></div></form>
 """
         return page("streamers", body, msg=request.args.get("msg"), streamers=cfg.streamers, platforms=PLATFORMS,
-                    n_fr=len(SUGGESTED["fr"]), n_us=len(SUGGESTED["us"]), n_more=len(SUGGESTED["more"]))
+                    n_fr=len(SUGGESTED["fr"]), n_us=len(SUGGESTED["us"]), n_more=len(SUGGESTED["more"]), n_us2=len(SUGGESTED["us2"]))
 
     @app.post("/streamers/add")
     def streamer_add():
