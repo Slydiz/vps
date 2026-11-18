@@ -593,3 +593,16 @@ def test_unknown_timezone_is_rejected(tmp_path):
     (tmp_path / "c.yaml").write_text("timezone: Mars/Olympus\n")
     with pytest.raises(ValueError, match="timezone"):
         load_config(tmp_path / "c.yaml")
+
+
+def test_recorder_failure_does_not_repeat_the_live_alert(tmp_path):
+    class Broken:
+        def __init__(self, *a, **k): pass
+        def start(self): raise FileNotFoundError("streamlink")
+    s = Streamer("kai", "twitch")
+    w = FakeWatcher([LiveInfo(True, "Hi", "u")] * 4)
+    cfg, store, spy, _ = make_pipeline(tmp_path, streamers=[s])
+    p = Pipeline(cfg, store, {"twitch": w}, spy, recorder_factory=Broken, chat_factory=FakeChat)
+    for _ in range(4):
+        p.poll()                                   # must not raise
+    assert [e for e in spy.events if e[0] == "live"] == [("live", "kai")]

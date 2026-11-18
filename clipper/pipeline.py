@@ -44,22 +44,29 @@ class Pipeline:
             self.store.set_streamer_state(key, s.name, s.platform, live=info.live, title=info.title, url=info.url,
                                           error="", game=info.game or "", ignored=info.live and not on_air)
             was = self.live_prev.get(key, False)
+            self.live_prev[key] = on_air   # set first: a recorder failure must not re-trigger the alert
             if on_air and not was:
                 self.store.log(f"{key} is live with a matching stream: {info.game or info.title}")
                 self.notifier.stream_live(s.name, s.platform, f"{info.game or ''} — {info.title}".strip(" —"), info.url)
-                self._start_recording(s, info.url)
+                self._safe_start(s, info.url)
             elif not on_air and was:
                 why = "went offline" if not info.live else f"switched to {info.game or 'another game'}"
                 self.store.log(f"{key} {why}")
                 self.notifier.stream_ended(s.name)
                 self._stop_recording(key)
-            elif on_air and key not in self.recorders:  # live at startup
-                self._start_recording(s, info.url)
+            elif on_air and key not in self.recorders:  # live at startup, or a previous start failed
+                self._safe_start(s, info.url)
             elif on_air and not self.recorders[key].alive():
                 self.store.log(f"{key}: recorder died, restarting", "warn")
                 self._stop_recording(key)
-                self._start_recording(s, info.url)
-            self.live_prev[key] = on_air
+                self._safe_start(s, info.url)
+
+    def _safe_start(self, s: Streamer, url: str):
+        try:
+            self._start_recording(s, url)
+        except Exception as e:
+            self.recorders.pop(s.key(), None)
+            self.store.log(f"{s.key()}: cannot start recording: {e}", "error")
 
     def _start_recording(self, s: Streamer, url: str):
         key = s.key()
