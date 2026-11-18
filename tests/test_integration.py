@@ -615,3 +615,13 @@ def test_add_more_suggested_streamers(gui):
     assert b"Add more" in c.get("/streamers").data
     c.post("/streamers/add-suggested", data={"group": "us2"})
     assert "twitch:asmongold" in {s.key() for s in ctx.cfg.streamers}
+
+
+def test_download_works_with_a_relative_clip_path(gui, monkeypatch):
+    c, store, ctx, ids, _ = gui
+    from pathlib import Path
+    abs_path = Path(store.get_clip(ids[0])["path"]).resolve()
+    monkeypatch.chdir(abs_path.parent)                    # like the service: relative path from its working dir
+    store.update_clip(ids[0], path=abs_path.name)
+    r = c.get(f"/clips/{ids[0]}/download")
+    assert r.status_code == 200 and r.data[4:8] == b"ftyp"

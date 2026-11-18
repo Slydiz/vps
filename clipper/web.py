@@ -325,7 +325,8 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
         if not clip or not Path(clip["path"]).exists():
             abort(404)
         name = re.sub(r"[^A-Za-z0-9_-]+", "-", f"{clip['streamer']}-clip-{clip_id}") + ".mp4"
-        return send_file(clip["path"], as_attachment=True, download_name=name, mimetype="video/mp4")
+        # absolute path: send_file resolves relative ones against the package folder, not the working dir
+        return send_file(Path(clip["path"]).resolve(), as_attachment=True, download_name=name, mimetype="video/mp4")
 
     @app.get("/media/<path:name>")
     def media(name):
