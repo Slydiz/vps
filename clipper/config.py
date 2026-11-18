@@ -29,6 +29,9 @@ HIDDEN_SECRETS = {"YOUTUBE_REFRESH_TOKEN"}  # stored like the others, but never 
 SUGGESTED = {
     "fr": ["squeezie", "gotaga", "locklear", "michou", "inoxtag", "domingo", "kamet0", "zerator", "hasheur", "raionchi"],
     "us": ["kaicenat", "summit1g", "timthetatman", "shroud", "sodapoppin", "lirik"],
+    # more: seen live on GTA VI or in a GTA VI streamer ranking on streamertimes.tv (18/11/2026), plus a few big names
+    "more": ["montanablack88", "mokrivskyi", "djmariio", "rubius", "elmariana", "jynxzi", "sypherpk", "nickmercs",
+             "xqc", "ludwig", "ponce", "mistermv", "joyca", "ninja"],
 }
 
 

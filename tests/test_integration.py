@@ -606,3 +606,10 @@ def test_recorder_failure_does_not_repeat_the_live_alert(tmp_path):
     for _ in range(4):
         p.poll()                                   # must not raise
     assert [e for e in spy.events if e[0] == "live"] == [("live", "kai")]
+
+
+def test_add_more_suggested_streamers(gui):
+    c, store, ctx, *_ = gui
+    r = c.post("/streamers/add-suggested", data={"group": "more"}, follow_redirects=True)
+    assert r.status_code == 200 and "twitch:montanablack88" in {s.key() for s in ctx.cfg.streamers}
+    assert b"Add more" in c.get("/streamers").data
