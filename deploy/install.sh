@@ -34,6 +34,7 @@ Description=Clip Pipeline
 After=network-online.target
 [Service]
 WorkingDirectory=$APP
+Environment=PATH=$APP/venv/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=$APP/venv/bin/python -m clipper --host $HOST run
 Restart=always
 RestartSec=5

@@ -39,7 +39,7 @@ def test_env_file_save_and_load(tmp_path):
 # ---- recorder
 def test_recorder_commands(tmp_path):
     sl, ff = recorder.build_commands("https://twitch.tv/x", tmp_path, "twitch-x", "20260101120000", 600)
-    assert sl[:2] == ["streamlink", "--stdout"] and sl[-2:] == ["https://twitch.tv/x", "best"]
+    assert sl[0].endswith("streamlink") and sl[1] == "--stdout" and sl[-2:] == ["https://twitch.tv/x", "best"]
     assert "-segment_time" in ff and ff[ff.index("-segment_time") + 1] == "600" and ff[-1].endswith("twitch-x_20260101120000_%03d.ts")
     assert ff[ff.index("-c") + 1] == "copy"                           # no re-encode while recording
 

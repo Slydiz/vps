@@ -5,7 +5,9 @@ streamlink writes the stream to stdout, ffmpeg copies it (no re-encode) into num
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -16,10 +18,16 @@ def safe_name(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9\-]", "-", s)
 
 
+def streamlink_bin() -> str:
+    """Find streamlink even when the venv's bin dir is not on PATH (systemd)."""
+    local = Path(sys.executable).parent / "streamlink"
+    return str(local) if local.exists() else (shutil.which("streamlink") or "streamlink")
+
+
 def build_commands(url: str, out_dir: Path, prefix: str, stamp: str, segment_seconds: int,
                    quality: str = "best") -> tuple[list[str], list[str]]:
     pattern = str(Path(out_dir) / f"{prefix}_{stamp}_%03d.ts")
-    sl = ["streamlink", "--stdout", "--retry-streams", "5", "--retry-max", "3", url, quality]
+    sl = [streamlink_bin(), "--stdout", "--retry-streams", "5", "--retry-max", "3", url, quality]
     ff = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-c", "copy",
           "-f", "segment", "-segment_time", str(segment_seconds), "-reset_timestamps", "1", pattern]
     return sl, ff
