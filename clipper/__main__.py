@@ -55,8 +55,10 @@ def cmd_check(a):
     for k, ok in secret_status().items():
         print(f"  {'OK     ' if ok else 'MISSING'} {k}")
     import shutil
-    for tool in ("ffmpeg", "ffprobe", "streamlink"):
-        print(f"  {'OK     ' if shutil.which(tool) else 'MISSING'} {tool}")
+    from .recorder import streamlink_bin
+    for tool, path in (("ffmpeg", shutil.which("ffmpeg")), ("ffprobe", shutil.which("ffprobe")),
+                       ("streamlink", shutil.which(streamlink_bin()))):
+        print(f"  {'OK     ' if path else 'MISSING'} {tool}")
 
 
 def cmd_demo(a):
