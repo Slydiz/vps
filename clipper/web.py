@@ -450,6 +450,7 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
 <label>Caption template ({streamer} and {platform} are replaced)</label><input name="caption" value="{{cfg.caption_template}}">
 <label>Only record streams whose game matches (comma separated, empty = record everything)</label><input name="game_filter" value="{{cfg.game_filter|join(', ')}}">
 <label>Also look for those words in the stream title</label><select name="match_title"><option value="0" {{'selected' if not cfg.match_title}}>No (game category only)</option><option value="1" {{'selected' if cfg.match_title}}>Yes</option></select>
+<label>Max clips kept on disk (the oldest posted or rejected ones are deleted beyond this; 0 = no limit)</label><input type="number" name="max_clips_kept" min="0" value="{{cfg.max_clips_kept}}">
 <label>Keep the raw recordings (uses a lot of disk: about 1 GB per 10 minutes)</label><select name="keep_recordings"><option value="0" {{'selected' if not cfg.keep_recordings}}>No, delete after clipping</option><option value="1" {{'selected' if cfg.keep_recordings}}>Yes</option></select>
 <label>YouTube Shorts visibility</label><select name="youtube_privacy">{% for v in ("public","unlisted","private") %}<option {{'selected' if cfg.youtube_privacy==v}}>{{v}}</option>{% endfor %}</select>
 </div><div style="margin-top:14px"><button class="acc">Save</button></div></form>
@@ -471,7 +472,7 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
         save_env_values({k: request.form.get(k, "") for k in SECRETS if k not in HIDDEN_SECRETS}, ctx.env_path, ctx.environ)
         c = cfg.clip
         backup = (c.pre_seconds, c.post_seconds, c.min_score, c.max_clips_per_segment, c.vertical, cfg.caption_template, cfg.youtube_privacy,
-                  list(cfg.game_filter), cfg.match_title, cfg.keep_recordings)
+                  list(cfg.game_filter), cfg.match_title, cfg.keep_recordings, cfg.max_clips_kept)
         try:
             c.pre_seconds = int(request.form.get("pre_seconds", c.pre_seconds))
             c.post_seconds = int(request.form.get("post_seconds", c.post_seconds))
@@ -484,10 +485,11 @@ def create_app(ctx: Ctx, sync_publish: bool = False) -> Flask:
                 cfg.game_filter = [g.strip() for g in re.split(r"[,\n]", request.form["game_filter"]) if g.strip()]
             cfg.match_title = request.form.get("match_title", "1" if cfg.match_title else "0") == "1"
             cfg.keep_recordings = request.form.get("keep_recordings", "1" if cfg.keep_recordings else "0") == "1"
+            cfg.max_clips_kept = int(request.form.get("max_clips_kept", cfg.max_clips_kept))
             validate(cfg)
         except ValueError as e:
             (c.pre_seconds, c.post_seconds, c.min_score, c.max_clips_per_segment, c.vertical, cfg.caption_template, cfg.youtube_privacy,
-             cfg.game_filter, cfg.match_title, cfg.keep_recordings) = backup
+             cfg.game_filter, cfg.match_title, cfg.keep_recordings, cfg.max_clips_kept) = backup
             return redirect(url_for("settings", msg=f"Not saved: {e}"))
         save_config(cfg, ctx.cfg_path)
         ctx.rebuild()

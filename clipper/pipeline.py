@@ -61,6 +61,40 @@ class Pipeline:
                 self._stop_recording(key)
                 self._safe_start(s, info.url)
 
+    # ------------------------------------------------------------ disk cleanup
+    DISPOSABLE = ("posted", "rejected")      # decided clips; pending/approved/manual/failed are never deleted
+
+    def prune_clips(self) -> int:
+        """Keep at most cfg.max_clips_kept clip files: delete the oldest posted/rejected ones beyond the limit."""
+        limit = self.cfg.max_clips_kept
+        if limit <= 0:
+            return 0
+        rows = [c for c in self.store.clips(limit=100000) if c["path"] and Path(c["path"]).exists()]
+        excess = len(rows) - limit
+        if excess <= 0:
+            return 0
+        removed = 0
+        for c in sorted(rows, key=lambda r: r["id"]):                 # oldest first
+            if removed >= excess:
+                break
+            if c["status"] not in self.DISPOSABLE:
+                continue
+            for f in (c["path"], c["thumb"]):
+                try:
+                    if f:
+                        Path(f).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            removed += 1
+        if removed:
+            self.store.log(f"disk cleanup: deleted {removed} old clip file(s) (keeping at most {limit})")
+        if removed < excess and not getattr(self, "_warned_prune", False):
+            self._warned_prune = True
+            self.store.log(f"{excess - removed} clip(s) over the limit are still waiting for your decision, not deleted", "warn")
+        elif removed >= excess:
+            self._warned_prune = False
+        return removed
+
     def _safe_start(self, s: Streamer, url: str):
         try:
             self._start_recording(s, url)
@@ -193,6 +227,10 @@ class Pipeline:
                 self.scan_segments()
             except Exception as e:
                 self.store.log(f"scan crashed: {e}", "error")
+            try:
+                self.prune_clips()
+            except Exception as e:
+                self.store.log(f"cleanup crashed: {e}", "error")
             stop.wait(15)
         for key in list(self.recorders):
             self._stop_recording(key)

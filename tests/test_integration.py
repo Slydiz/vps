@@ -625,3 +625,36 @@ def test_download_works_with_a_relative_clip_path(gui, monkeypatch):
     store.update_clip(ids[0], path=abs_path.name)
     r = c.get(f"/clips/{ids[0]}/download")
     assert r.status_code == 200 and r.data[4:8] == b"ftyp"
+
+
+def _fake_clip(store, tmp_path, i, status):
+    f = tmp_path / f"c{i}.mp4"; f.write_bytes(b"x")
+    t = tmp_path / f"c{i}.jpg"; t.write_bytes(b"x")
+    return store.add_clip(streamer_key="twitch:k", streamer="k", platform="twitch", path=str(f), thumb=str(t),
+                          source_segment="s", start_s=0, end_s=1, peak_s=0, score=5, reason="", status=status), f
+
+
+def test_prune_deletes_oldest_decided_clips_and_never_pending(tmp_path):
+    cfg, store, spy, p = make_pipeline(tmp_path)
+    cfg.max_clips_kept = 3
+    made = [_fake_clip(store, tmp_path, 0, "pending"), _fake_clip(store, tmp_path, 1, "posted"),
+            _fake_clip(store, tmp_path, 2, "rejected"), _fake_clip(store, tmp_path, 3, "manual"),
+            _fake_clip(store, tmp_path, 4, "posted"), _fake_clip(store, tmp_path, 5, "pending")]
+    assert p.prune_clips() == 3                         # 6 files, keep 3: the 2 oldest decided + next decided
+    alive = [f.exists() for _, f in made]
+    assert alive == [True, False, False, True, False, True]   # pending + manual always survive
+    assert p.prune_clips() == 0
+
+
+def test_prune_disabled_when_zero(tmp_path):
+    cfg, store, spy, p = make_pipeline(tmp_path)
+    cfg.max_clips_kept = 0
+    ids = [_fake_clip(store, tmp_path, i, "posted") for i in range(5)]
+    assert p.prune_clips() == 0 and all(f.exists() for _, f in ids)
+
+
+def test_max_clips_kept_setting_is_saved(gui):
+    c, store, ctx, *_ = gui
+    c.post("/settings", data={"max_clips_kept": "42"})
+    assert ctx.cfg.max_clips_kept == 42
+    assert b"Max clips kept" in c.get("/settings").data

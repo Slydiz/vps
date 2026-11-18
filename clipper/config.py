@@ -72,6 +72,7 @@ class Config:
     timezone: str = "Europe/Paris"    # how times are displayed (the server itself runs in UTC)
     game_filter: list[str] = field(default_factory=lambda: ["grand theft auto vi", "gta vi", "gta 6", "grand theft auto 6"])
     match_title: bool = False         # also look for the keywords in the stream title (Twitch/Kick)
+    max_clips_kept: int = 100         # clip files kept on disk; the oldest posted/rejected ones are deleted beyond this (0 = no limit)
     keep_recordings: bool = False     # delete the raw 10-min segments once clips were cut (saves disk)
     quality: str = "720p60,720p,best"  # streamlink quality preference: lighter than 'best'
     clip: ClipCfg = field(default_factory=ClipCfg)
@@ -105,6 +106,7 @@ def load_config(path: str | Path) -> Config:
         timezone=str(raw.get("timezone", "Europe/Paris")),
         game_filter=[str(x) for x in raw.get("game_filter", Config().game_filter) or []],
         match_title=bool(raw.get("match_title", False)),
+        max_clips_kept=int(raw.get("max_clips_kept", 100)),
         keep_recordings=bool(raw.get("keep_recordings", False)),
         quality=str(raw.get("quality", "720p60,720p,best")),
         clip=clip,
@@ -121,6 +123,8 @@ def validate(cfg: Config) -> None:
         ZoneInfo(cfg.timezone)
     except Exception:
         raise ValueError(f"unknown timezone {cfg.timezone!r} (example: Europe/Paris)")
+    if cfg.max_clips_kept < 0:
+        raise ValueError("max_clips_kept must be 0 (no limit) or more")
     if cfg.poll_seconds < 15:
         raise ValueError("poll_seconds must be >= 15")
     if cfg.segment_seconds < 60:
